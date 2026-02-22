@@ -168,11 +168,26 @@ mv ~/apps/proxy ~/apps/Website/
 
 ### Optional: install global aera command (recommended)
 
+Bootstrap `aera` into root from Ops repo:
+
+```bash
+cd ~/apps/Website
+curl -fsSL https://raw.githubusercontent.com/Lusekero/Aera-Website-Ops/main/aera -o ./aera
+chmod +x ./aera
+```
+
+Update later (same command):
+
+```bash
+cd ~/apps/Website
+curl -fsSL https://raw.githubusercontent.com/Lusekero/Aera-Website-Ops/main/aera -o ./aera
+chmod +x ./aera
+```
+
 Run once on VPS so you can use `aera` from any directory:
 
 ```bash
 cd ~/apps/Website
-chmod +x ./aera
 sudo ln -sf ~/apps/Website/aera /usr/local/bin/aera
 ```
 

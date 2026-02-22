@@ -151,9 +151,26 @@ ls -la ~/apps/Website
 
 Install global `aera` command (optional, recommended):
 
+First bootstrap `aera` into root from Ops repo:
+
 ```bash
 cd ~/apps/Website
+curl -fsSL https://raw.githubusercontent.com/Lusekero/Aera-Website-Ops/main/aera -o ./aera
 chmod +x ./aera
+```
+
+Update later (same command):
+
+```bash
+cd ~/apps/Website
+curl -fsSL https://raw.githubusercontent.com/Lusekero/Aera-Website-Ops/main/aera -o ./aera
+chmod +x ./aera
+```
+
+Then install global command:
+
+```bash
+cd ~/apps/Website
 sudo ln -sf ~/apps/Website/aera /usr/local/bin/aera
 ```
 
