@@ -155,3 +155,73 @@ cd ~/apps/Website
 ./aera maintenance:status
 ./aera smtp:show
 ```
+
+---
+
+## Update: Multi-repo split + Ops repo (2026-02-22)
+
+### What changed
+
+- Project is now split across GitHub repos:
+    - `Aera-Website-API` (backend)
+    - `Aera-Website-Client` (client)
+    - `Aera-Website-Proxy` (proxy)
+    - `Aera-Website-Ops` (runbooks + `aera` orchestrator)
+- Operational docs moved to Ops repo and updated:
+    - `DEPLOY-CHEATSHEET.md`
+    - `README.md`
+    - `SESSION-HANDOFF.md`
+
+### Root command strategy in production
+
+- Canonical CLI file is now managed in Ops repo: `Aera-Website-Ops/aera`.
+- VPS root launcher should be bootstrapped/updated by downloading single file into `~/apps/Website/aera`.
+- This preserves Laravel-style command UX from workspace root (`./aera ...`) while keeping source of truth in Ops repo.
+
+Bootstrap/update command:
+
+```bash
+cd ~/apps/Website
+curl -fsSL https://raw.githubusercontent.com/Lusekero/Aera-Website-Ops/main/aera -o ./aera
+chmod +x ./aera
+```
+
+Optional global symlink:
+
+```bash
+sudo ln -sf ~/apps/Website/aera /usr/local/bin/aera
+```
+
+### Environment-file security hardening
+
+Audit result across repos:
+
+- Backend had tracked real `.env.production` (contains secrets) — must remain untracked.
+- Proxy had tracked real env files (`dev/.env.edge.dev`, `prod/.env.edge.prod`, `prod/.env.edge.prod.local`) — now intended to remain untracked.
+- Client uses `.env.example` pattern (safe baseline).
+
+Policy moving forward:
+
+- Commit only `*.example` env templates.
+- Keep real env files local/VPS only.
+- Rotate any credentials that were previously tracked.
+
+### MongoDB password rotation guidance added to docs
+
+- Added procedure for existing production DB after env duplication:
+    - Run `changeUserPassword(...)` inside running Mongo container.
+    - Update backend `MONGO_INITDB_ROOT_PASSWORD` and `MONGODB_URI` in `.env.production` via `./aera env:set`.
+    - Recreate/wait backend stack.
+- Clarified first-time deploy case: set env before first `backend:up` (no rotation step needed on fresh volume).
+
+### Next-session checklist
+
+- Ensure VPS runbooks use the single-file `aera` bootstrap from Ops GitHub.
+- Confirm root `~/apps/Website/aera` is executable and matches latest Ops commit.
+- Confirm no real `.env*` files are tracked in API/Proxy repos before future pushes.
+- If secret exposure occurred historically, complete credential rotation:
+    - Mongo/RabbitMQ passwords
+    - JWT and refresh-token keys
+    - Email OTP secret
+    - Public API key
+    - reCAPTCHA secret

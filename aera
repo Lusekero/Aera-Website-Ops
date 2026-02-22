@@ -2,7 +2,14 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SCRIPT_DIR/backend" ] && [ -d "$SCRIPT_DIR/client" ] && [ -d "$SCRIPT_DIR/proxy" ]; then
+  ROOT_DIR="$SCRIPT_DIR"
+elif [ -d "$SCRIPT_DIR/../backend" ] && [ -d "$SCRIPT_DIR/../client" ] && [ -d "$SCRIPT_DIR/../proxy" ]; then
+  ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+  ROOT_DIR="$SCRIPT_DIR"
+fi
 BACKEND_DIR="$ROOT_DIR/backend"
 CLIENT_DIR="$ROOT_DIR/client"
 PROXY_DIR="$ROOT_DIR/proxy"
@@ -224,6 +231,10 @@ Operations:
   logs:backend            Tail backend logs
   logs:client             Tail client logs
   logs:edge               Tail edge logs
+
+Ops maintenance:
+  ops:install             Create/update root ./aera launcher that points to ./ops/aera
+  ops:install:global      Create/update /usr/local/bin/aera symlink to root launcher
 
 Namespaced aliases (root passthrough):
   backend:cmd <cmd...>    Run any backend script command via backend/scripts/aera
@@ -1039,6 +1050,37 @@ cmd_env_unset() {
   log "Removed ${#keys[@]} key(s) from $env_file"
 }
 
+cmd_ops_install() {
+  local launcher_path="$ROOT_DIR/aera"
+
+  mkdir -p "$ROOT_DIR"
+  cat > "$launcher_path" <<EOF
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+exec "\$ROOT_DIR/ops/aera" "\$@"
+EOF
+  chmod +x "$launcher_path"
+  log "Root launcher installed: $launcher_path"
+}
+
+cmd_ops_install_global() {
+  cmd_ops_install
+
+  local launcher_path="$ROOT_DIR/aera"
+  if [ -w /usr/local/bin ] || [ ! -e /usr/local/bin/aera ]; then
+    ln -sf "$launcher_path" /usr/local/bin/aera
+    log "Global command linked: /usr/local/bin/aera -> $launcher_path"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo ln -sf "$launcher_path" /usr/local/bin/aera
+    log "Global command linked with sudo: /usr/local/bin/aera -> $launcher_path"
+  else
+    warn "Cannot write /usr/local/bin and sudo is unavailable. Link manually: ln -sf $launcher_path /usr/local/bin/aera"
+  fi
+}
+
 main() {
   local command="${1:-help}"
   shift || true
@@ -1115,6 +1157,8 @@ main() {
     env:set) cmd_env_set "$@" ;;
     env:get) cmd_env_get "$@" ;;
     env:unset) cmd_env_unset "$@" ;;
+    ops:install) cmd_ops_install ;;
+    ops:install:global) cmd_ops_install_global ;;
     deploy:all) cmd_deploy_all ;;
     smtp:configure) cmd_smtp_configure "$@" ;;
     smtp:show) cmd_smtp_show ;;

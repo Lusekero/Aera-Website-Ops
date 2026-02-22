@@ -231,6 +231,33 @@ cp -n proxy/prod/.env.edge.prod.local.example proxy/prod/.env.edge.prod.local
 
 `cp -n` avoids overwriting existing env files.
 
+MongoDB password rotation after env duplication (existing production DB):
+
+```bash
+cd ~/apps/Website/backend
+set -euo pipefail
+source .env.production
+
+read -s -p "New Mongo root password: " NEW_PASS; echo
+
+docker exec -i aera-mongo-prod mongosh \
+  -u "$MONGO_INITDB_ROOT_USERNAME" \
+  -p "$MONGO_INITDB_ROOT_PASSWORD" \
+  --authenticationDatabase admin \
+  --eval "db.getSiblingDB('admin').changeUserPassword('$MONGO_INITDB_ROOT_USERNAME', '$NEW_PASS')"
+
+cd ~/apps/Website
+./aera env:set --target=backend --profile=prod \
+  --set MONGO_INITDB_ROOT_PASSWORD="$NEW_PASS" \
+  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@aera-mongo:27017/$MONGO_INITDB_DATABASE"
+
+./aera backend:up
+./aera backend:wait
+./aera status
+```
+
+For first-time deploy on a brand-new Mongo volume, set the password in env before first `./aera backend:up` and skip `changeUserPassword`.
+
 ### Backend env
 
 Create/edit:
