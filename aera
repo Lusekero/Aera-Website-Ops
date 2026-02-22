@@ -1,0 +1,1128 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+CLIENT_DIR="$ROOT_DIR/client"
+PROXY_DIR="$ROOT_DIR/proxy"
+
+BACKEND_ENV_DEV="$BACKEND_DIR/.env"
+BACKEND_ENV="$BACKEND_DIR/.env.production"
+CLIENT_ENV_DEV="$CLIENT_DIR/.env"
+CLIENT_ENV="$CLIENT_DIR/.env.production"
+PROXY_ENV_DEV="$PROXY_DIR/dev/.env.edge.dev"
+PROXY_ENV="$PROXY_DIR/prod/.env.edge.prod"
+BACKEND_COMPOSE="$BACKEND_DIR/docker-compose.production.yml"
+CLIENT_COMPOSE="$CLIENT_DIR/docker-compose.prod.yml"
+EDGE_COMPOSE="$PROXY_DIR/prod/docker-compose.edge.prod.yml"
+BACKEND_SCRIPT="$BACKEND_DIR/scripts/aera"
+CLIENT_SCRIPT="$CLIENT_DIR/scripts/aera"
+MAINTENANCE_DIR="$PROXY_DIR/prod/nginx/maintenance"
+MAINTENANCE_FLAG="$MAINTENANCE_DIR/enabled"
+
+NETWORK_NAME="${AERA_SHARED_NETWORK:-aera_network_prod}"
+WAIT_SECONDS="${AERA_WAIT_SECONDS:-600}"
+RETRY_PAUSE_SECONDS="${AERA_RETRY_PAUSE_SECONDS:-300}"
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log() { echo -e "${GREEN}[aera]${NC} $*"; }
+info() { echo -e "${BLUE}[aera] INFO:${NC} $*"; }
+warn() { echo -e "${YELLOW}[aera] WARN:${NC} $*"; }
+fail() { echo -e "${RED}[aera] ERROR:${NC} $*" >&2; exit 1; }
+
+is_true() {
+  case "${1:-}" in
+    true|TRUE|1|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+require_file() {
+  [ -f "$1" ] || fail "Missing required file: $1"
+}
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+}
+
+is_valid_env_key() {
+  [[ "${1:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+env_resolve_file() {
+  local target="$1"
+  local profile="$2"
+
+  case "${target,,}" in
+    backend)
+      case "${profile,,}" in
+        dev|development) echo "$BACKEND_ENV_DEV" ;;
+        prod|production) echo "$BACKEND_ENV" ;;
+        *) fail "Unsupported profile for backend: $profile (use dev|prod)" ;;
+      esac
+      ;;
+    client)
+      case "${profile,,}" in
+        dev|development) echo "$CLIENT_ENV_DEV" ;;
+        prod|production) echo "$CLIENT_ENV" ;;
+        *) fail "Unsupported profile for client: $profile (use dev|prod)" ;;
+      esac
+      ;;
+    proxy)
+      case "${profile,,}" in
+        dev|development) echo "$PROXY_ENV_DEV" ;;
+        prod|production) echo "$PROXY_ENV" ;;
+        *) fail "Unsupported profile for proxy: $profile (use dev|prod)" ;;
+      esac
+      ;;
+    *)
+      fail "Unsupported target: $target (use backend|client|proxy)"
+      ;;
+  esac
+}
+
+env_ensure_file_exists() {
+  local env_file="$1"
+  if [ -f "$env_file" ]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$env_file")"
+  if [ -f "${env_file}.example" ]; then
+    cp "${env_file}.example" "$env_file"
+    info "Created env file from template: $env_file"
+  else
+    touch "$env_file"
+    info "Created env file: $env_file"
+  fi
+}
+
+env_set_value_in_file() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped
+
+  escaped=$(escape_sed_replacement "$value")
+  if grep -q -E "^${key}=" "$env_file"; then
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$env_file"
+  else
+    printf "%s=%s\n" "$key" "$value" >> "$env_file"
+  fi
+}
+
+env_get_value_from_file() {
+  local env_file="$1"
+  local key="$2"
+  grep -E "^${key}=" "$env_file" 2>/dev/null | tail -n1 | cut -d'=' -f2- || true
+}
+
+env_unset_key_in_file() {
+  local env_file="$1"
+  local key="$2"
+  sed -i "/^${key}=.*/d" "$env_file"
+}
+
+dc() {
+  docker compose "$@"
+}
+
+status_of() {
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || true
+}
+
+all_backend_healthy() {
+  [ "$(status_of aera-mongo-prod)" = "healthy" ] \
+    && [ "$(status_of aera-redis-prod)" = "healthy" ] \
+    && [ "$(status_of aera-rabbitmq-prod)" = "healthy" ] \
+    && [ "$(status_of aera-api-prod)" = "healthy" ]
+}
+
+wait_backend_healthy() {
+  local deadline now
+  deadline=$(( $(date +%s) + WAIT_SECONDS ))
+
+  info "Waiting for backend health checks (timeout: ${WAIT_SECONDS}s)"
+  while true; do
+    if all_backend_healthy; then
+      log "Backend services are healthy (mongo, redis, rabbitmq, api)"
+      return 0
+    fi
+
+    printf '[aera] pending health: mongo=%s redis=%s rabbitmq=%s api=%s\n' \
+      "$(status_of aera-mongo-prod)" \
+      "$(status_of aera-redis-prod)" \
+      "$(status_of aera-rabbitmq-prod)" \
+      "$(status_of aera-api-prod)"
+
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      fail "Timeout while waiting for backend health checks"
+    fi
+    sleep 5
+  done
+}
+
+ensure_prerequisites() {
+  require_cmd docker
+  require_file "$BACKEND_COMPOSE"
+  require_file "$CLIENT_COMPOSE"
+  require_file "$EDGE_COMPOSE"
+  require_file "$BACKEND_ENV"
+  require_file "$CLIENT_ENV"
+}
+
+ensure_backend_prerequisites() {
+  require_cmd docker
+  require_file "$BACKEND_COMPOSE"
+  require_file "$BACKEND_ENV"
+  require_file "$BACKEND_SCRIPT"
+}
+
+cmd_help() {
+  cat <<'EOF'
+AERA Unified CLI (root)
+
+Usage:
+  ./aera <command>
+
+Core deploy flow (backend-first):
+  doctor                  Validate files, docker, and compose availability
+  network:ensure          Optional shared network creation (idempotent)
+  backend:up              Start backend stack
+  backend:down            Stop backend stack
+  backend:restart         Restart backend stack
+  backend:wait            Wait until mongo/redis/rabbitmq/api are healthy
+  backend:retry           Wait 5 min, then retry backend up + healthy wait
+  client:up               Start client stack (uses shared network)
+  client:down             Stop client stack
+  client:restart          Restart client stack
+  edge:up                 Start proxy edge stack
+  edge:down               Stop proxy edge stack
+  cert:init EMAIL=<mail>  Issue Let's Encrypt cert via proxy Makefile
+  edge:restart            Restart edge service after cert issuance
+  deploy:all EMAIL=<mail> Full production flow with safety guards
+  maintenance:on          Enable edge maintenance page (HTTP 503)
+  maintenance:off         Disable edge maintenance page
+  maintenance:status      Show maintenance mode status
+  smtp:configure          Configure SMTP provider/env keys for production
+  smtp:show               Show current SMTP settings (password masked)
+  smtp:test               Send a test email using running backend SMTP config
+
+Operations:
+  status                  Show backend/client/edge status
+  logs:backend            Tail backend logs
+  logs:client             Tail client logs
+  logs:edge               Tail edge logs
+
+Namespaced aliases (root passthrough):
+  backend:cmd <cmd...>    Run any backend script command via backend/scripts/aera
+  client:cmd <cmd...>     Run any client script command via client/scripts/aera
+  edge:cmd <target...>    Run any proxy Makefile target via proxy/Makefile
+
+Backend aliases:
+  backend:doctor          Alias for backend/scripts/aera doctor
+  backend:launch:pre      Alias for backend/scripts/aera launch:pre
+  backend:launch:public   Alias for backend/scripts/aera launch:public
+  backend:launch:backup   Alias for backend/scripts/aera launch:backup
+  backend:launch:up       Alias for backend/scripts/aera launch:up
+  backend:launch:down-safe Alias for backend/scripts/aera launch:down-safe
+  backend:launch:apply    Alias for backend/scripts/aera launch:apply
+  backend:launch:status   Alias for backend/scripts/aera launch:status
+  backend:launch:verify   Alias for backend/scripts/aera launch:verify
+  backend:launch:day      Alias for backend/scripts/aera launch:day
+  backend:logs:tail       Alias for backend/scripts/aera logs:tail
+  backend:queue:health    Alias for backend/scripts/aera queue:health
+  backend:api:health      Alias for backend/scripts/aera api:health
+  backend:ci:check        Alias for backend/scripts/aera ci:check
+  backend:docker:build:check Alias for backend/scripts/aera docker:build:check
+
+Client aliases:
+  client:init             Alias for client/scripts/aera init
+  client:ssl:generate     Alias for client/scripts/aera ssl:generate
+  client:ssl:install      Alias for client/scripts/aera ssl:install
+  client:deploy           Alias for client/scripts/aera deploy
+  client:deploy:test      Alias for client/scripts/aera deploy:test
+  client:deploy:prod      Alias for client/scripts/aera deploy:prod
+  client:backup           Alias for client/scripts/aera backup
+  client:restore          Alias for client/scripts/aera restore
+  client:rollback         Alias for client/scripts/aera rollback
+  client:preflight        Alias for client/scripts/aera preflight
+  client:health           Alias for client/scripts/aera health
+  client:env:check        Alias for client/scripts/aera env:check
+  client:tinker           Alias for client/scripts/aera tinker
+  client:maintenance:down Alias for client/scripts/aera maintenance:down
+  client:maintenance:up   Alias for client/scripts/aera maintenance:up
+  client:maintenance:status Alias for client/scripts/aera maintenance:status
+  client:start            Alias for client/scripts/aera start
+  client:stop             Alias for client/scripts/aera stop
+  client:restart:services Alias for client/scripts/aera restart
+  client:logs             Alias for client/scripts/aera logs
+  client:status           Alias for client/scripts/aera status
+  client:clean            Alias for client/scripts/aera clean
+  client:update           Alias for client/scripts/aera update
+
+Root env/content aliases:
+  backend:cmd             Pass through any backend scripts command
+  backend:secrets:generate Generate backend secrets (JWT/API/etc) into dev or prod env file
+  client:api-key:sync     Copy backend PUBLIC_API_KEY to client NUXT_PUBLIC_API_KEY for the same profile
+  client:secrets:generate Generate client secrets into dev or prod env file
+  proxy:secrets:generate  Generate proxy secrets into dev or prod env file
+  env:set                 Set one or more env variables in backend/client/proxy env files
+  env:get                 Read one or more env variables from backend/client/proxy env files
+  env:unset               Remove one or more env variables from backend/client/proxy env files
+
+Backend content aliases (Laravel-style):
+  content:seed:admin      Seed default division + admin user
+  content:seed:user       Alias of content:seed:admin
+  content:cache:clear     Clear backend page cache
+
+Environment overrides:
+  AERA_SHARED_NETWORK=<name>       (default: aera_network_prod)
+  AERA_WAIT_SECONDS=<seconds>      (default: 600)
+  AERA_RETRY_PAUSE_SECONDS=<secs>  (default: 300)
+
+SMTP examples:
+  ./aera smtp:configure --provider=m365 --user=info@aera.org.mw --password='***' --from='"AERA" <no-reply@aera.org.mw>'
+  ./aera smtp:configure --provider=cpanel --host=mail.aera.org.mw --port=465 --secure=true --user=info@aera.org.mw --password='***' --from='"AERA" <no-reply@aera.org.mw>' --restart
+  ./aera smtp:configure --provider=cpanel --host=mail.aera.org.mw --port=465 --secure=true --user=info@aera.org.mw --password='***' --worker-only
+  ./aera smtp:show
+  ./aera smtp:test --to=info@aera.org.mw
+
+Unified env examples:
+  ./aera env:set --target=backend --profile=prod --set JWT_SECRET='super-secret' --set REFRESH_TOKEN_ENCRYPTION_KEY='another-secret'
+  ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads
+  ./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=test.aera.org.mw --set TLS_CERT_DOMAIN=test.aera.org.mw
+  ./aera client:api-key:sync --profile=prod
+  ./aera env:get --target=backend --profile=prod --get JWT_SECRET --get EMAIL_HOST
+  ./aera env:unset --target=backend --profile=dev --unset OLD_SECRET_KEY
+  ./aera backend:secrets:generate --profile=prod
+  ./aera client:secrets:generate --profile=prod --secret CUSTOM_CLIENT_SECRET
+  ./aera proxy:secrets:generate --profile=prod --secret CUSTOM_EDGE_SECRET --format=base64
+EOF
+}
+
+ensure_client_prerequisites() {
+  require_cmd docker
+  require_file "$CLIENT_COMPOSE"
+  require_file "$CLIENT_ENV"
+  require_file "$CLIENT_SCRIPT"
+}
+
+ensure_proxy_prerequisites() {
+  require_cmd docker
+  require_file "$EDGE_COMPOSE"
+  require_file "$PROXY_DIR/Makefile"
+}
+
+run_backend_script() {
+  (cd "$BACKEND_DIR" && ./scripts/aera "$@")
+}
+
+cmd_backend_down() {
+  ensure_prerequisites
+  info "Stopping backend stack"
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" down
+  log "Backend stop command complete"
+}
+
+cmd_backend_restart() {
+  ensure_prerequisites
+  info "Restarting backend stack"
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" restart
+  log "Backend restart command complete"
+}
+
+cmd_doctor() {
+  ensure_prerequisites
+  if docker compose version >/dev/null 2>&1; then
+    log "Docker Compose plugin detected"
+  else
+    fail "Docker Compose plugin is not available"
+  fi
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" config >/dev/null
+  dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" config >/dev/null
+  dc -f "$EDGE_COMPOSE" config >/dev/null
+  log "Doctor checks passed"
+}
+
+cmd_client_down() {
+  ensure_prerequisites
+  info "Stopping client stack"
+  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" down
+  log "Client stop command complete"
+}
+
+cmd_client_restart() {
+  ensure_prerequisites
+  info "Restarting client stack"
+  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" restart
+  log "Client restart command complete"
+}
+
+cmd_network_ensure() {
+  ensure_prerequisites
+  if docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+    info "Network already exists: $NETWORK_NAME"
+  else
+    info "Creating network: $NETWORK_NAME"
+    docker network create "$NETWORK_NAME" >/dev/null
+  fi
+  log "Shared network ready: $NETWORK_NAME"
+}
+
+cmd_edge_down() {
+  ensure_prerequisites
+  info "Stopping edge stack"
+  dc -f "$EDGE_COMPOSE" down
+  log "Edge stop command complete"
+}
+
+cmd_backend_up() {
+  ensure_prerequisites
+  info "Starting backend stack"
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" up -d
+  log "Backend start command complete"
+}
+
+run_client_script() {
+  (cd "$CLIENT_DIR" && ./scripts/aera "$@")
+}
+
+run_proxy_make_target() {
+  (cd "$PROXY_DIR" && make "$@")
+}
+
+cmd_backend_wait() {
+  ensure_prerequisites
+  wait_backend_healthy
+}
+
+cmd_client_cmd() {
+  ensure_client_prerequisites
+  [ "$#" -gt 0 ] || fail "Usage: ./aera client:cmd <client-command> [args...]"
+  run_client_script "$@"
+}
+
+cmd_edge_cmd() {
+  ensure_proxy_prerequisites
+  [ "$#" -gt 0 ] || fail "Usage: ./aera edge:cmd <make-target> [args...]"
+  run_proxy_make_target "$@"
+}
+
+cmd_backend_retry() {
+  ensure_prerequisites
+  warn "Waiting ${RETRY_PAUSE_SECONDS}s before retrying backend startup"
+  sleep "$RETRY_PAUSE_SECONDS"
+  cmd_backend_up
+  cmd_backend_wait
+}
+
+cmd_client_up() {
+  ensure_prerequisites
+  if ! all_backend_healthy; then
+    fail "Backend is not fully healthy. Run ./aera backend:wait (or backend:retry) first."
+  fi
+  info "Starting client stack on shared network: $NETWORK_NAME"
+  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" up -d
+  log "Client start command complete"
+}
+
+cmd_edge_up() {
+  ensure_prerequisites
+  info "Starting edge stack"
+  dc -f "$EDGE_COMPOSE" up -d
+  log "Edge start command complete"
+}
+
+cmd_cert_init() {
+  ensure_prerequisites
+  local email="${EMAIL:-}"
+  [ -n "$email" ] || fail "Usage: EMAIL=<you@example.com> ./aera cert:init"
+  info "Issuing certificates via proxy Makefile"
+  (cd "$PROXY_DIR" && make prod-cert-init EMAIL="$email")
+  log "Certificate issuance command complete"
+}
+
+cmd_edge_restart() {
+  ensure_prerequisites
+  info "Restarting edge container"
+  dc -f "$EDGE_COMPOSE" restart aera-edge-prod
+  log "Edge restarted"
+}
+
+cmd_status() {
+  ensure_prerequisites
+  echo "== BACKEND =="
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" ps
+  echo ""
+  echo "== CLIENT =="
+  dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" ps
+  echo ""
+  echo "== EDGE =="
+  dc -f "$EDGE_COMPOSE" ps
+}
+
+cmd_logs_backend() {
+  ensure_prerequisites
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" logs -f --tail=200
+}
+
+cmd_logs_client() {
+  ensure_prerequisites
+  dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" logs -f --tail=200
+}
+
+cmd_logs_edge() {
+  ensure_prerequisites
+  dc -f "$EDGE_COMPOSE" logs -f --tail=200 aera-edge-prod
+}
+
+reload_edge_nginx() {
+  if docker ps --format '{{.Names}}' | grep -qx 'aera-edge-prod'; then
+    dc -f "$EDGE_COMPOSE" exec -T aera-edge-prod nginx -s reload >/dev/null 2>&1 || \
+      dc -f "$EDGE_COMPOSE" restart aera-edge-prod >/dev/null
+  else
+    warn "aera-edge-prod is not running; maintenance flag updated only"
+  fi
+}
+
+cmd_maintenance_on() {
+  mkdir -p "$MAINTENANCE_DIR"
+  dc -f "$EDGE_COMPOSE" up -d aera-edge-prod >/dev/null 2>&1 || true
+  touch "$MAINTENANCE_FLAG"
+  reload_edge_nginx
+  log "Maintenance mode enabled"
+}
+
+cmd_maintenance_off() {
+  rm -f "$MAINTENANCE_FLAG"
+  reload_edge_nginx
+  log "Maintenance mode disabled"
+}
+
+cmd_maintenance_status() {
+  if [ -f "$MAINTENANCE_FLAG" ]; then
+    echo "maintenance: ON"
+  else
+    echo "maintenance: OFF"
+  fi
+}
+
+cmd_smtp_configure() {
+  ensure_backend_prerequisites
+
+  local provider="custom"
+  local host=""
+  local port=""
+  local secure=""
+  local user=""
+  local password=""
+  local from=""
+  local restart_backend="true"
+  local restart_mode="api-worker"
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --provider=*) provider="${arg#*=}" ;;
+      --host=*) host="${arg#*=}" ;;
+      --port=*) port="${arg#*=}" ;;
+      --secure=*) secure="${arg#*=}" ;;
+      --user=*) user="${arg#*=}" ;;
+      --password=*) password="${arg#*=}" ;;
+      --from=*) from="${arg#*=}" ;;
+      --restart) restart_backend="true" ;;
+      --no-restart) restart_backend="false" ;;
+      --worker-only) restart_mode="worker-only" ;;
+      *) fail "Unknown smtp:configure option: $arg" ;;
+    esac
+  done
+
+  case "${provider,,}" in
+    gmail)
+      host="${host:-smtp.gmail.com}"
+      port="${port:-587}"
+      secure="${secure:-false}"
+      ;;
+    m365|office365|outlook)
+      host="${host:-smtp.office365.com}"
+      port="${port:-587}"
+      secure="${secure:-false}"
+      ;;
+    cpanel)
+      port="${port:-587}"
+      secure="${secure:-false}"
+      ;;
+    custom)
+      ;;
+    *)
+      fail "Unsupported provider: $provider (use gmail|m365|outlook|office365|cpanel|custom)"
+      ;;
+  esac
+
+  [ -n "$host" ] || fail "smtp:configure requires --host (or provider preset with default host)"
+  [ -n "$port" ] || fail "smtp:configure requires --port"
+  [ -n "$user" ] || fail "smtp:configure requires --user"
+  [ -n "$password" ] || fail "smtp:configure requires --password"
+
+  if [ -z "$secure" ]; then
+    if [ "$port" = "465" ]; then
+      secure="true"
+    else
+      secure="false"
+    fi
+  fi
+
+  if [ -z "$from" ]; then
+    from="\"Atomic Energy Regulatory Authority\" <${user}>"
+  fi
+
+  info "Writing SMTP settings to backend .env.production"
+  (
+    cd "$BACKEND_DIR"
+    ./scripts/aera env:set:prod \
+      --set "EMAIL_HOST=${host}" \
+      --set "EMAIL_PORT=${port}" \
+      --set "EMAIL_SECURE=${secure}" \
+      --set "EMAIL_USER=${user}" \
+      --set "EMAIL_PASSWORD=${password}" \
+      --set "EMAIL_FROM=${from}"
+  )
+  log "SMTP configuration saved (provider=${provider}, host=${host}, port=${port}, secure=${secure})"
+
+  if is_true "$restart_backend"; then
+    if [ "$restart_mode" = "worker-only" ]; then
+      info "Recreating backend runtime service (aera-worker) to apply SMTP changes"
+      dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" up -d aera-worker
+      warn "API container was not recreated (--worker-only). Use only when you are sure mail is sent from worker paths."
+    else
+      info "Recreating backend runtime services (aera-api, aera-worker) to apply SMTP changes"
+      dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" up -d aera-api aera-worker
+    fi
+  else
+    warn "SMTP updated but backend not restarted (--no-restart used)"
+  fi
+}
+
+cmd_smtp_test() {
+  ensure_backend_prerequisites
+
+  local to=""
+  local subject="AERA SMTP test email"
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --to=*) to="${arg#*=}" ;;
+      --subject=*) subject="${arg#*=}" ;;
+      *) fail "Unknown smtp:test option: $arg" ;;
+    esac
+  done
+
+  local recipient="$to"
+  if [ -z "$recipient" ]; then
+    recipient=$(grep -E '^EMAIL_USER=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  fi
+  [ -n "$recipient" ] || fail "smtp:test needs --to=<email> or EMAIL_USER in $BACKEND_ENV"
+
+  if ! docker ps --format '{{.Names}}' | grep -qx 'aera-api-prod'; then
+    fail "Container aera-api-prod is not running. Start backend first with ./aera backend:up"
+  fi
+
+  info "Sending SMTP test email to $recipient via aera-api-prod"
+  docker exec -e SMTP_TEST_TO="$recipient" -e SMTP_TEST_SUBJECT="$subject" aera-api-prod node -e "const nodemailer=require('nodemailer');const host=process.env.EMAIL_HOST;const port=Number(process.env.EMAIL_PORT||'587');const secure=(String(process.env.EMAIL_SECURE||'').toLowerCase()==='true')||(port===465);const user=process.env.EMAIL_USER;const pass=process.env.EMAIL_PASSWORD;const from=process.env.EMAIL_FROM||user;const to=process.env.SMTP_TEST_TO||user;const sub=process.env.SMTP_TEST_SUBJECT||'AERA SMTP test email';if(!host||!user||!pass){console.error('Missing EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD in container env');process.exit(1);}const t=nodemailer.createTransport({host,port,secure,auth:{user,pass}});t.sendMail({from,to,subject:sub,text:'SMTP test from AERA at '+new Date().toISOString()}).then(info=>{console.log('SMTP test mail queued:',info.messageId);}).catch(err=>{console.error('SMTP test failed:',err.message);process.exit(1);});"
+  log "SMTP test command completed"
+}
+
+cmd_smtp_show() {
+  ensure_backend_prerequisites
+
+  local host port secure user from password masked
+  host=$(grep -E '^EMAIL_HOST=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  port=$(grep -E '^EMAIL_PORT=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  secure=$(grep -E '^EMAIL_SECURE=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  user=$(grep -E '^EMAIL_USER=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  from=$(grep -E '^EMAIL_FROM=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+  password=$(grep -E '^EMAIL_PASSWORD=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)
+
+  if [ -z "$secure" ]; then
+    if [ "$port" = "465" ]; then
+      secure="true"
+    else
+      secure="false"
+    fi
+  fi
+
+  if [ -n "$password" ]; then
+    masked="********"
+  else
+    masked="(not set)"
+  fi
+
+  echo "SMTP settings from $BACKEND_ENV"
+  echo "  EMAIL_HOST=$host"
+  echo "  EMAIL_PORT=$port"
+  echo "  EMAIL_SECURE=$secure"
+  echo "  EMAIL_USER=$user"
+  echo "  EMAIL_PASSWORD=$masked"
+  echo "  EMAIL_FROM=$from"
+}
+
+cmd_deploy_all() {
+  ensure_prerequisites
+  cmd_network_ensure
+  cmd_backend_up
+
+  if ! cmd_backend_wait; then
+    warn "Initial backend wait failed; running retry sequence"
+    cmd_backend_retry
+  fi
+
+  cmd_client_up
+  cmd_edge_up
+
+  if [ -n "${EMAIL:-}" ]; then
+    cmd_cert_init
+    cmd_edge_restart
+  else
+    warn "Skipping cert:init (set EMAIL=<you@example.com> when ready)"
+  fi
+
+  cmd_status
+  log "Deploy flow completed"
+}
+
+cmd_backend_cmd() {
+  ensure_backend_prerequisites
+  [ "$#" -gt 0 ] || fail "Usage: ./aera backend:cmd <backend-command> [args...]"
+  run_backend_script "$@"
+}
+
+cmd_content_seed_admin() {
+  ensure_backend_prerequisites
+  run_backend_script content:seed:admin "$@"
+}
+
+cmd_content_cache_clear() {
+  ensure_backend_prerequisites
+  run_backend_script content:cache:clear "$@"
+}
+
+cmd_backend_secrets_generate() {
+  local profile="prod"
+  local show_values="false"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      --show) show_values="true" ;;
+      *) fail "Unknown backend:secrets:generate option: $1" ;;
+    esac
+    shift || true
+  done
+
+  case "${profile,,}" in
+    dev|development) profile="dev" ;;
+    prod|production) profile="prod" ;;
+    *) fail "backend:secrets:generate requires --profile=dev|prod" ;;
+  esac
+
+  require_cmd openssl
+
+  local mongo_password rabbitmq_password jwt_secret refresh_token_key email_otp_secret public_api_key
+  mongo_password=$(openssl rand -hex 16)
+  rabbitmq_password=$(openssl rand -hex 16)
+  jwt_secret=$(openssl rand -hex 64)
+  refresh_token_key=$(openssl rand -hex 32)
+  email_otp_secret=$(openssl rand -base64 32)
+  public_api_key=$(openssl rand -hex 64)
+
+  cmd_env_set \
+    --target backend \
+    --profile "$profile" \
+    --set "MONGO_INITDB_ROOT_PASSWORD=${mongo_password}" \
+    --set "RABBITMQ_PASSWORD=${rabbitmq_password}" \
+    --set "JWT_SECRET=${jwt_secret}" \
+    --set "REFRESH_TOKEN_ENCRYPTION_KEY=${refresh_token_key}" \
+    --set "EMAIL_OTP_SECRET=${email_otp_secret}" \
+    --set "PUBLIC_API_KEY=${public_api_key}"
+
+  if is_true "$show_values"; then
+    echo "Generated backend secrets in profile=$profile"
+    echo "MONGO_INITDB_ROOT_PASSWORD=$mongo_password"
+    echo "RABBITMQ_PASSWORD=$rabbitmq_password"
+    echo "JWT_SECRET=$jwt_secret"
+    echo "REFRESH_TOKEN_ENCRYPTION_KEY=$refresh_token_key"
+    echo "EMAIL_OTP_SECRET=$email_otp_secret"
+    echo "PUBLIC_API_KEY=$public_api_key"
+  else
+    log "Generated backend secrets in backend profile=$profile"
+    warn "Values were written to env file and hidden in output. Use --show only in a secure terminal session if you need to see them."
+  fi
+}
+
+cmd_client_api_key_sync() {
+  local profile="prod"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      *) fail "Unknown client:api-key:sync option: $1" ;;
+    esac
+    shift || true
+  done
+
+  case "${profile,,}" in
+    dev|development) profile="dev" ;;
+    prod|production) profile="prod" ;;
+    *) fail "client:api-key:sync requires --profile=dev|prod" ;;
+  esac
+
+  local backend_file client_file public_api_key
+  backend_file=$(env_resolve_file backend "$profile")
+  client_file=$(env_resolve_file client "$profile")
+
+  require_file "$backend_file"
+  env_ensure_file_exists "$client_file"
+
+  public_api_key=$(env_get_value_from_file "$backend_file" "PUBLIC_API_KEY")
+  [ -n "$public_api_key" ] || fail "PUBLIC_API_KEY is empty in $backend_file. Set/generate backend key first."
+
+  cmd_env_set --target client --profile "$profile" --set "NUXT_PUBLIC_API_KEY=${public_api_key}"
+  log "Synced backend PUBLIC_API_KEY -> client NUXT_PUBLIC_API_KEY for profile=$profile"
+}
+
+cmd_target_secrets_generate() {
+  local target="$1"
+  shift || true
+
+  local profile="prod"
+  local show_values="false"
+  local format="hex"
+  local bytes="32"
+  local secrets=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      --secret=*) secrets+=("${1#*=}") ;;
+      --secret)
+        shift
+        secrets+=("${1:-}")
+        ;;
+      --format=*) format="${1#*=}" ;;
+      --format)
+        shift
+        format="${1:-}"
+        ;;
+      --bytes=*) bytes="${1#*=}" ;;
+      --bytes)
+        shift
+        bytes="${1:-}"
+        ;;
+      --show) show_values="true" ;;
+      *) fail "Unknown ${target}:secrets:generate option: $1" ;;
+    esac
+    shift || true
+  done
+
+  case "${profile,,}" in
+    dev|development) profile="dev" ;;
+    prod|production) profile="prod" ;;
+    *) fail "${target}:secrets:generate requires --profile=dev|prod" ;;
+  esac
+
+  case "${format,,}" in
+    hex|base64) ;;
+    *) fail "${target}:secrets:generate supports --format=hex|base64" ;;
+  esac
+
+  [[ "$bytes" =~ ^[0-9]+$ ]] || fail "${target}:secrets:generate requires --bytes as a positive integer"
+  [ "$bytes" -gt 0 ] || fail "${target}:secrets:generate requires --bytes > 0"
+  [ "${#secrets[@]}" -gt 0 ] || fail "${target}:secrets:generate requires at least one --secret KEY"
+
+  require_cmd openssl
+
+  local set_args=()
+  local output_lines=()
+  local key value
+  for key in "${secrets[@]}"; do
+    is_valid_env_key "$key" || fail "Invalid env key: $key"
+    if [ "${format,,}" = "base64" ]; then
+      value=$(openssl rand -base64 "$bytes")
+    else
+      value=$(openssl rand -hex "$bytes")
+    fi
+    set_args+=(--set "${key}=${value}")
+    output_lines+=("${key}=${value}")
+  done
+
+  cmd_env_set --target "$target" --profile "$profile" "${set_args[@]}"
+
+  if is_true "$show_values"; then
+    echo "Generated ${target} secrets in profile=$profile"
+    printf '%s\n' "${output_lines[@]}"
+  else
+    log "Generated ${#secrets[@]} ${target} secret key(s) in profile=$profile"
+    warn "Values were written to env file and hidden in output. Use --show only in a secure terminal session if you need to see them."
+  fi
+}
+
+cmd_client_secrets_generate() {
+  cmd_target_secrets_generate client "$@"
+}
+
+cmd_proxy_secrets_generate() {
+  cmd_target_secrets_generate proxy "$@"
+}
+
+cmd_env_set() {
+  local target=""
+  local profile=""
+  local env_file=""
+  local pairs=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target=*) target="${1#*=}" ;;
+      --target)
+        shift
+        target="${1:-}"
+        ;;
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      --set=*) pairs+=("${1#*=}") ;;
+      --set)
+        shift
+        pairs+=("${1:-}")
+        ;;
+      *) fail "Unknown env:set option: $1" ;;
+    esac
+    shift || true
+  done
+
+  [ -n "$target" ] || fail "env:set requires --target=backend|client|proxy"
+  [ -n "$profile" ] || fail "env:set requires --profile=dev|prod"
+  [ "${#pairs[@]}" -gt 0 ] || fail "env:set requires at least one --set KEY=VALUE"
+
+  env_file=$(env_resolve_file "$target" "$profile")
+  env_ensure_file_exists "$env_file"
+
+  local pair key value
+  for pair in "${pairs[@]}"; do
+    if [[ "$pair" != *=* ]]; then
+      fail "Invalid --set value: $pair (expected KEY=VALUE)"
+    fi
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    is_valid_env_key "$key" || fail "Invalid env key: $key"
+    env_set_value_in_file "$env_file" "$key" "$value"
+  done
+
+  log "Updated ${#pairs[@]} key(s) in $env_file"
+}
+
+cmd_env_get() {
+  local target=""
+  local profile=""
+  local env_file=""
+  local keys=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target=*) target="${1#*=}" ;;
+      --target)
+        shift
+        target="${1:-}"
+        ;;
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      --get=*) keys+=("${1#*=}") ;;
+      --get)
+        shift
+        keys+=("${1:-}")
+        ;;
+      *) fail "Unknown env:get option: $1" ;;
+    esac
+    shift || true
+  done
+
+  [ -n "$target" ] || fail "env:get requires --target=backend|client|proxy"
+  [ -n "$profile" ] || fail "env:get requires --profile=dev|prod"
+  [ "${#keys[@]}" -gt 0 ] || fail "env:get requires at least one --get KEY"
+
+  env_file=$(env_resolve_file "$target" "$profile")
+  require_file "$env_file"
+
+  local key value
+  for key in "${keys[@]}"; do
+    is_valid_env_key "$key" || fail "Invalid env key: $key"
+    value=$(env_get_value_from_file "$env_file" "$key")
+    if [ -n "$value" ]; then
+      echo "$key=$value"
+    else
+      echo "$key="
+    fi
+  done
+}
+
+cmd_env_unset() {
+  local target=""
+  local profile=""
+  local env_file=""
+  local keys=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target=*) target="${1#*=}" ;;
+      --target)
+        shift
+        target="${1:-}"
+        ;;
+      --profile=*) profile="${1#*=}" ;;
+      --profile)
+        shift
+        profile="${1:-}"
+        ;;
+      --unset=*) keys+=("${1#*=}") ;;
+      --unset)
+        shift
+        keys+=("${1:-}")
+        ;;
+      *) fail "Unknown env:unset option: $1" ;;
+    esac
+    shift || true
+  done
+
+  [ -n "$target" ] || fail "env:unset requires --target=backend|client|proxy"
+  [ -n "$profile" ] || fail "env:unset requires --profile=dev|prod"
+  [ "${#keys[@]}" -gt 0 ] || fail "env:unset requires at least one --unset KEY"
+
+  env_file=$(env_resolve_file "$target" "$profile")
+  require_file "$env_file"
+
+  local key
+  for key in "${keys[@]}"; do
+    is_valid_env_key "$key" || fail "Invalid env key: $key"
+    env_unset_key_in_file "$env_file" "$key"
+  done
+
+  log "Removed ${#keys[@]} key(s) from $env_file"
+}
+
+main() {
+  local command="${1:-help}"
+  shift || true
+  case "$command" in
+    help|-h|--help) cmd_help ;;
+    doctor) cmd_doctor ;;
+    network:ensure) cmd_network_ensure ;;
+    backend:up) cmd_backend_up ;;
+    backend:wait) cmd_backend_wait ;;
+    backend:retry) cmd_backend_retry ;;
+    client:up) cmd_client_up ;;
+    backend:down) cmd_backend_down ;;
+    backend:restart) cmd_backend_restart ;;
+    client:down) cmd_client_down ;;
+    client:restart) cmd_client_restart ;;
+    edge:up) cmd_edge_up ;;
+    edge:down) cmd_edge_down ;;
+    cert:init) cmd_cert_init ;;
+    edge:restart) cmd_edge_restart ;;
+    maintenance:on) cmd_maintenance_on ;;
+    maintenance:off) cmd_maintenance_off ;;
+    maintenance:status) cmd_maintenance_status ;;
+    status) cmd_status ;;
+    logs:backend) cmd_logs_backend ;;
+    logs:client) cmd_logs_client ;;
+    logs:edge) cmd_logs_edge ;;
+    backend:cmd) cmd_backend_cmd "$@" ;;
+    client:cmd) cmd_client_cmd "$@" ;;
+    edge:cmd) cmd_edge_cmd "$@" ;;
+    backend:doctor) ensure_backend_prerequisites; run_backend_script doctor "$@" ;;
+    backend:launch:pre) ensure_backend_prerequisites; run_backend_script launch:pre "$@" ;;
+    backend:launch:public) ensure_backend_prerequisites; run_backend_script launch:public "$@" ;;
+    backend:launch:backup) ensure_backend_prerequisites; run_backend_script launch:backup "$@" ;;
+    backend:launch:up) ensure_backend_prerequisites; run_backend_script launch:up "$@" ;;
+    backend:launch:down-safe) ensure_backend_prerequisites; run_backend_script launch:down-safe "$@" ;;
+    backend:launch:apply) ensure_backend_prerequisites; run_backend_script launch:apply "$@" ;;
+    backend:launch:status) ensure_backend_prerequisites; run_backend_script launch:status "$@" ;;
+    backend:launch:verify) ensure_backend_prerequisites; run_backend_script launch:verify "$@" ;;
+    backend:launch:day) ensure_backend_prerequisites; run_backend_script launch:day "$@" ;;
+    backend:logs:tail) ensure_backend_prerequisites; run_backend_script logs:tail "$@" ;;
+    backend:queue:health) ensure_backend_prerequisites; run_backend_script queue:health "$@" ;;
+    backend:api:health) ensure_backend_prerequisites; run_backend_script api:health "$@" ;;
+    backend:ci:check) ensure_backend_prerequisites; run_backend_script ci:check "$@" ;;
+    backend:docker:build:check) ensure_backend_prerequisites; run_backend_script docker:build:check "$@" ;;
+    client:init) ensure_client_prerequisites; run_client_script init "$@" ;;
+    client:ssl:generate) ensure_client_prerequisites; run_client_script ssl:generate "$@" ;;
+    client:ssl:install) ensure_client_prerequisites; run_client_script ssl:install "$@" ;;
+    client:deploy) ensure_client_prerequisites; run_client_script deploy "$@" ;;
+    client:deploy:test) ensure_client_prerequisites; run_client_script deploy:test "$@" ;;
+    client:deploy:prod) ensure_client_prerequisites; run_client_script deploy:prod "$@" ;;
+    client:backup) ensure_client_prerequisites; run_client_script backup "$@" ;;
+    client:restore) ensure_client_prerequisites; run_client_script restore "$@" ;;
+    client:rollback) ensure_client_prerequisites; run_client_script rollback "$@" ;;
+    client:preflight) ensure_client_prerequisites; run_client_script preflight "$@" ;;
+    client:health) ensure_client_prerequisites; run_client_script health "$@" ;;
+    client:env:check) ensure_client_prerequisites; run_client_script env:check "$@" ;;
+    client:tinker) ensure_client_prerequisites; run_client_script tinker "$@" ;;
+    client:maintenance:down) ensure_client_prerequisites; run_client_script maintenance:down "$@" ;;
+    client:maintenance:up) ensure_client_prerequisites; run_client_script maintenance:up "$@" ;;
+    client:maintenance:status) ensure_client_prerequisites; run_client_script maintenance:status "$@" ;;
+    client:start) ensure_client_prerequisites; run_client_script start "$@" ;;
+    client:stop) ensure_client_prerequisites; run_client_script stop "$@" ;;
+    client:restart:services) ensure_client_prerequisites; run_client_script restart "$@" ;;
+    client:logs) ensure_client_prerequisites; run_client_script logs "$@" ;;
+    client:status) ensure_client_prerequisites; run_client_script status "$@" ;;
+    client:clean) ensure_client_prerequisites; run_client_script clean "$@" ;;
+    client:update) ensure_client_prerequisites; run_client_script update "$@" ;;
+    backend:secrets:generate) cmd_backend_secrets_generate "$@" ;;
+    client:api-key:sync) cmd_client_api_key_sync "$@" ;;
+    client:secrets:generate) cmd_client_secrets_generate "$@" ;;
+    proxy:secrets:generate) cmd_proxy_secrets_generate "$@" ;;
+    content:seed:admin|content:seed:user) cmd_content_seed_admin "$@" ;;
+    content:cache:clear) cmd_content_cache_clear "$@" ;;
+    env:set) cmd_env_set "$@" ;;
+    env:get) cmd_env_get "$@" ;;
+    env:unset) cmd_env_unset "$@" ;;
+    deploy:all) cmd_deploy_all ;;
+    smtp:configure) cmd_smtp_configure "$@" ;;
+    smtp:show) cmd_smtp_show ;;
+    smtp:test) cmd_smtp_test "$@" ;;
+    *)
+      fail "Unknown command: $command (run ./aera help)"
+      ;;
+  esac
+}
+
+main "$@"
