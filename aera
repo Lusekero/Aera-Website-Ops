@@ -337,7 +337,7 @@ ensure_proxy_prerequisites() {
 }
 
 run_backend_script() {
-  (cd "$BACKEND_DIR" && ./scripts/aera "$@")
+  (cd "$BACKEND_DIR" && bash ./scripts/aera "$@")
 }
 
 cmd_backend_down() {
@@ -407,7 +407,7 @@ cmd_backend_up() {
 }
 
 run_client_script() {
-  (cd "$CLIENT_DIR" && ./scripts/aera "$@")
+  (cd "$CLIENT_DIR" && bash ./scripts/aera "$@")
 }
 
 run_proxy_make_target() {
