@@ -602,7 +602,7 @@ cmd_smtp_configure() {
   info "Writing SMTP settings to backend .env.production"
   (
     cd "$BACKEND_DIR"
-    ./scripts/aera env:set:prod \
+    bash ./scripts/aera env:set:prod \
       --set "EMAIL_HOST=${host}" \
       --set "EMAIL_PORT=${port}" \
       --set "EMAIL_SECURE=${secure}" \
