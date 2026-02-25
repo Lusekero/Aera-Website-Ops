@@ -133,6 +133,71 @@ git clone https://github.com/Lusekero/Aera-Website-Proxy.git proxy
 ls -la ~/apps/Website
 ```
 
+If HTTPS git auth fails (`Invalid username or token`), configure SSH once on the VPS, then use `GIT_PROTOCOL="ssh"` in the clone/update block:
+
+```bash
+# 1) Generate SSH key (press Enter for default path; optional passphrase)
+ssh-keygen -t ed25519 -C "<your_github_email>"
+
+# 2) Start agent and load key
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+
+# 3) Add GitHub host key
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+# 4) Print public key and add it in GitHub:
+#    GitHub -> Settings -> SSH and GPG keys -> New SSH key
+cat ~/.ssh/id_ed25519.pub
+
+# 5) Verify auth (expected message: You've successfully authenticated)
+ssh -T git@github.com
+```
+
+If you are connected as `root`, use this exact root-safe block:
+
+```bash
+set -euo pipefail
+
+# 1) Create SSH key (press Enter at prompt to use /root/.ssh/id_ed25519)
+ssh-keygen -t ed25519 -C "<your_github_email>"
+
+# 2) Start agent and load key
+eval "$(ssh-agent -s)"
+ssh-add /root/.ssh/id_ed25519
+
+# 3) Trust GitHub host key with proper permissions
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+ssh-keyscan -H github.com >> /root/.ssh/known_hosts
+chmod 600 /root/.ssh/known_hosts
+
+# 4) Print public key and add in GitHub -> Settings -> SSH and GPG keys
+cat /root/.ssh/id_ed25519.pub
+
+# 5) Verify SSH auth to GitHub
+ssh -T git@github.com
+```
+
+If `ssh-keygen` says the file already exists, type `n` (do not overwrite), then either reuse existing key with `ssh-add /root/.ssh/id_ed25519` or create a new key file:
+
+```bash
+ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519_github -C "<your_github_email>"
+ssh-add /root/.ssh/id_ed25519_github
+cat /root/.ssh/id_ed25519_github.pub
+```
+
+Quick remote switch (existing repos already cloned with HTTPS):
+
+```bash
+cd ~/apps/Website
+git -C backend remote set-url origin git@github.com:Lusekero/Aera-Website-API.git
+git -C client remote set-url origin git@github.com:Lusekero/Aera-Website-Client.git
+git -C proxy remote set-url origin git@github.com:Lusekero/Aera-Website-Proxy.git
+git -C backend remote -v
+git -C client remote -v
+git -C proxy remote -v
+```
+
 If any folder already exists, remove it first or use the clone/update block above.
 
 If repos were cloned/uploaded elsewhere, move them into place:
@@ -186,6 +251,22 @@ If repo path changes later, relink quickly:
 sudo rm -f /usr/local/bin/aera
 sudo ln -sf ~/apps/Website/aera /usr/local/bin/aera
 ```
+
+---
+
+## 4) Pre-deploy sanity checks
+
+# Backend: remove dev configs and examples
+
+rm -f backend/docker-compose.yml backend/.env.example
+
+# Client: remove dev Dockerfile, dev compose, and example env
+
+rm -f client/Dockerfile.dev client/docker-compose.dev.yml client/.env.example
+
+# Proxy: remove the entire dev folder
+
+rm -f proxy/dev proxy/prod/.env.edge.prod.local.example proxy/prod/docker-compose.edge.prod.local.yml
 
 ---
 
@@ -296,15 +377,15 @@ cd ~/apps/Website
 
 # Backend
 cp -n backend/.env.example backend/.env
-cp -n backend/.env.production.example backend/.env.production
+if [ ! -f backend/.env.production ]; then cp backend/.env.production.example backend/.env.production; fi
 
 # Client
 cp -n client/.env.example client/.env
-cp -n client/.env.production.example client/.env.production
+if [ ! -f client/.env.production ]; then cp client/.env.production.example client/.env.production; fi
 
 # Proxy (dev + prod)
 cp -n proxy/dev/.env.edge.dev.example proxy/dev/.env.edge.dev
-cp -n proxy/prod/.env.edge.prod.example proxy/prod/.env.edge.prod
+if [ ! -f proxy/prod/.env.edge.prod ]; then cp proxy/prod/.env.edge.prod.example proxy/prod/.env.edge.prod; fi
 
 # Optional local-prod variant (if you use local prod override)
 cp -n proxy/prod/.env.edge.prod.local.example proxy/prod/.env.edge.prod.local
@@ -370,6 +451,7 @@ cd ~/apps/Website
 # Client production/public env
 ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads --set NUXT_PUBLIC_APP_ORIGIN=https://test.aera.org.mw
 ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_RECAPTCHA_SITE_KEY='<site_key_from_recaptcha>'
+./aera env:set --target=client --profile=prod --set RECAPTCHA_SITE_KEY='<site_key_from_recaptcha>'
 
 # Proxy production routing/env
 ./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=test.aera.org.mw --set SECONDARY_DOMAIN=aera.org.mw --set TLS_CERT_DOMAIN=test.aera.org.mw
@@ -413,6 +495,12 @@ CLIENT_UPSTREAM=nuxt-prod:3000
 API_UPSTREAM=aera-api-prod:4000
 CLIENT_MAX_BODY_SIZE=200m
 ```
+
+Important first-issuance note (staged DNS):
+
+- `./aera cert:init` requests certs for `TLS_CERT_DOMAIN` plus distinct `PRIMARY_DOMAIN`/`SECONDARY_DOMAIN` values.
+- If only the test domain currently points to VPS, set `SECONDARY_DOMAIN` equal to `PRIMARY_DOMAIN` temporarily (or to the same test domain) before first `cert:init`.
+- After `aera.org.mw` DNS points to VPS, restore `SECONDARY_DOMAIN=aera.org.mw` and re-run `./aera cert:init`.
 
 Configure SMTP from cPanel (production email sending):
 
@@ -527,6 +615,8 @@ EMAIL=<YOUR_EMAIL> ./aera cert:init
 ./aera edge:restart
 ./aera status
 ```
+
+If cert issuance fails for a secondary domain not yet pointed to VPS, temporarily set `SECONDARY_DOMAIN` to match the active domain and retry `cert:init`.
 
 Or run full flow in one command (first-time friendly):
 

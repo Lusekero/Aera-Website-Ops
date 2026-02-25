@@ -69,6 +69,84 @@ Important:
   proxy/
 ```
 
+---
+
+## Update: Full stack recovery + test-domain go-live (2026-02-25)
+
+### Completed in this session
+
+- Backend authentication/startup blocker resolved; backend is stable/healthy.
+- Client SSR crash fixed and deployed:
+    - Homepage/public payload null-guard hardening in client.
+    - Pulled on VPS and rebuilt client image from latest source.
+- Edge/TLS brought online successfully for test domain:
+    - Bootstrap cert path handled.
+    - Let’s Encrypt certificate successfully issued for `test.aera.org.mw`.
+    - HTTPS serving correctly (`301` http→https, `200` over https).
+- Proxy certbot sidecar stability fixes were applied in proxy compose and deployed.
+
+### Notable code/deploy changes applied
+
+- Client repo:
+    - `5542378` — SSR/public page payload guard hardening (prevents `heroSection` undefined crash).
+- Proxy repo:
+    - Certbot service command/entrypoint fixes in `prod/docker-compose.edge.prod.yml` so renewal loop runs under shell correctly.
+
+### Current runtime state (authoritative)
+
+- `backend`: healthy (`mongo`, `redis`, `rabbitmq`, `api`, `worker`).
+- `client`: healthy (`aera-client-prod`).
+- `edge`: healthy (`aera-edge-prod`) and serving TLS on `test.aera.org.mw`.
+- `certbot`: configured and running with renewal loop behavior corrected.
+
+### Current domain mode (important)
+
+- Active primary/testing domain for this VPS: `test.aera.org.mw`.
+- `proxy/prod/.env.edge.prod` is currently set for test-domain-first operation.
+- `aera.org.mw` cutover is deferred until content/admin setup is complete.
+
+### Resume here next session (backend seeding + content ops)
+
+Run from `~/apps/Website`:
+
+```bash
+./aera status
+
+# Seed default division + admin user (set strong values)
+ADMIN_PASSWORD='<STRONG_PASSWORD>' \
+ADMIN_EMAIL='admin@aera.org.mw' \
+ADMIN_FIRSTNAME='System' \
+ADMIN_LASTNAME='Admin' \
+./aera content:seed:admin
+
+# Clear backend content cache
+./aera content:cache:clear
+```
+
+Optional verification after seeding:
+
+```bash
+./aera logs:backend
+curl -Ik https://test.aera.org.mw
+```
+
+### Planned later cutover (no migration)
+
+When ready to switch primary domain to `aera.org.mw`:
+
+- Update `proxy/prod/.env.edge.prod`:
+    - `PRIMARY_DOMAIN=aera.org.mw`
+    - `SECONDARY_DOMAIN=test.aera.org.mw`
+    - `TLS_CERT_DOMAIN=aera.org.mw`
+- Then run:
+
+```bash
+cd ~/apps/Website
+EMAIL=<ops_email> ./aera cert:init
+./aera edge:restart
+./aera status
+```
+
 ## Recommended deployment flow now (VPS)
 
 From `~/apps/Website`:
@@ -225,3 +303,162 @@ Policy moving forward:
     - Email OTP secret
     - Public API key
     - reCAPTCHA secret
+
+---
+
+## Update: VPS auth + deploy continuation (2026-02-23)
+
+### Where we left off
+
+- Local repos are clean/synced to `main` after push/merge flow:
+    - API: `Aera-Website-API`
+    - Client: `Aera-Website-Client` (feature branch merged into `main` and pushed)
+    - Proxy: `Aera-Website-Proxy`
+    - Ops: `Aera-Website-Ops`
+- Requested TS prop issues under client resources pages were fixed.
+- VPS prep reached cheat-sheet Step 4 (clone/update repos under `~/apps/Website`).
+- Blocker identified and resolved in docs: GitHub no longer accepts account password for git over HTTPS; use SSH key auth (or PAT).
+
+### What was updated in docs this session
+
+- `DEPLOY-CHEATSHEET.md` now includes a reusable SSH setup block under Section 4:
+    - generate key
+    - add key to agent
+    - register GitHub host
+    - add public key to GitHub
+    - verify with `ssh -T git@github.com`
+- Added quick commands to switch existing repo remotes from HTTPS to SSH.
+
+### Resume commands (from VPS)
+
+```bash
+cd ~/apps/Website
+
+# If SSH auth is not configured yet, run the new SSH block in DEPLOY-CHEATSHEET Section 4.
+
+# Then continue Step 4 using SSH
+GITHUB_OWNER="Lusekero"
+BACKEND_REPO="Aera-Website-API"
+CLIENT_REPO="Aera-Website-Client"
+PROXY_REPO="Aera-Website-Proxy"
+GIT_PROTOCOL="ssh"
+
+# Run clone_or_update block from DEPLOY-CHEATSHEET.md
+```
+
+After repos are present, continue normal deploy flow:
+
+```bash
+cd ~/apps/Website
+./aera doctor
+./aera network:ensure
+./aera backend:up
+./aera backend:wait
+./aera client:up
+./aera edge:up
+./aera status
+```
+
+### Notes
+
+- If VPS was rebooted after Docker install, reconnect via SSH and continue from the resume commands above.
+- If `ssh -T git@github.com` fails, fix SSH auth first before retrying clone/update.
+
+---
+
+## Update: MongoDB password rotation & backend stack (2026-02-23)
+
+### Where to resume
+
+- MongoDB password rotation is in progress or just completed.
+- The following commands are the next checkpoint:
+
+```bash
+# 1. Change MongoDB root password inside the running container:
+docker exec -i aera-mongo-prod mongosh \
+  -u "$MONGO_INITDB_ROOT_USERNAME" \
+  -p "$MONGO_INITDB_ROOT_PASSWORD" \
+  --authenticationDatabase admin \
+  --eval "db.getSiblingDB('admin').changeUserPassword('$MONGO_INITDB_ROOT_USERNAME', '$NEW_PASS')"
+
+# 2. Update backend env with new password and URI:
+cd ~/apps/Website
+./aera env:set --target=backend --profile=prod \
+  --set MONGO_INITDB_ROOT_PASSWORD="$NEW_PASS" \
+  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@aera-mongo:27017/$MONGO_INITDB_DATABASE"
+
+# 3. Restart backend stack:
+./aera backend:up
+./aera backend:wait
+./aera status
+```
+
+**Resume here next session to complete or verify MongoDB password rotation and backend stack health.**
+
+---
+
+## Update: VPS backend troubleshooting checkpoint (2026-02-24)
+
+### Completed in this session
+
+- Pushed backend `main` commits used in this troubleshooting run:
+    - `d21041e` — production API healthcheck timing tuned.
+    - `c4270ae` — synced local backend config updates.
+    - `02fc49f` — API startup failure handling now exits non-zero and prints `[API STARTUP FAILURE] ...`.
+- VPS pulled latest backend and rebuilt API/worker images.
+
+### Findings (authoritative)
+
+- API no longer fails silently; logs now expose cause.
+- First failure seen: `Password contains unescaped characters` (URI encoding issue).
+- URI encoding was corrected for `MONGODB_URI` and `RABBITMQ_URL`.
+- Current blocker after encoding fix: `[API STARTUP FAILURE] Authentication failed.`
+- `mongosh` check with env credentials failed (`MongoServerError: Authentication failed`).
+- Mongo volume was reset and recreated (`production_mongo_data`), but API health still did not pass before pause.
+
+### Last known runtime state
+
+- `mongo`, `redis`, `rabbitmq` healthy.
+- `aera-api-prod` restart loop (`starting`/`unhealthy`).
+- API logs repeatedly show `Authentication failed.`
+
+### First commands to run next session (fresh bootstrap path)
+
+```bash
+cd ~/apps/Website
+
+# Backup env
+cp backend/.env.production backend/.env.production.bak.$(date +%F-%H%M%S)
+
+# Full backend reset with volumes
+docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml down -v --remove-orphans
+
+# Load env context
+cd backend
+set -a
+source .env.production
+set +a
+cd ..
+
+# Use simple bootstrap passwords (first successful bring-up)
+NEW_MONGO_PASS='AeraMongoPass2026'
+NEW_RMQ_PASS='AeraRabbitPass2026'
+
+./aera env:set --target=backend --profile=prod   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_MONGO_PASS"   --set RABBITMQ_PASSWORD="$NEW_RMQ_PASS"   --set MONGODB_URI="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${NEW_MONGO_PASS}@aera-mongo:27017/${MONGO_INITDB_DATABASE}?authSource=admin"   --set RABBITMQ_URL="amqp://${RABBITMQ_USER}:${NEW_RMQ_PASS}@aera-rabbitmq:${RABBITMQ_PORT}"
+
+./aera backend:up
+./aera backend:wait
+```
+
+### If still unhealthy, collect immediately
+
+```bash
+cd ~/apps/Website
+./aera status
+docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml logs --tail=120 aera-api
+docker inspect aera-api-prod --format 'status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+
+cd ~/apps/Website/backend
+set -a; source .env.production; set +a
+docker exec -i aera-mongo-prod mongosh   -u "$MONGO_INITDB_ROOT_USERNAME"   -p "$MONGO_INITDB_ROOT_PASSWORD"   --authenticationDatabase admin   --eval 'db.adminCommand({ ping: 1 })'
+```
