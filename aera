@@ -211,7 +211,8 @@ Core deploy flow (backend-first):
   backend:restart         Restart backend stack
   backend:wait            Wait until mongo/redis/rabbitmq/api are healthy
   backend:retry           Wait 5 min, then retry backend up + healthy wait
-  client:up               Start client stack (uses shared network)
+  client:build            Build client image (supports --no-cache)
+  client:up [--build]     Start client stack (uses shared network)
   client:down             Stop client stack
   client:restart          Restart client stack
   edge:up                 Start proxy edge stack
@@ -441,12 +442,47 @@ cmd_backend_retry() {
 
 cmd_client_up() {
   ensure_prerequisites
+  local compose_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --build)
+        compose_args+=(--build)
+        ;;
+      *)
+        fail "Unknown option for client:up: $1 (supported: --build)"
+        ;;
+    esac
+    shift
+  done
+
   if ! all_backend_healthy; then
     fail "Backend is not fully healthy. Run ./aera backend:wait (or backend:retry) first."
   fi
   info "Starting client stack on shared network: $NETWORK_NAME"
-  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" up -d
+  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" up -d "${compose_args[@]}"
   log "Client start command complete"
+}
+
+cmd_client_build() {
+  ensure_prerequisites
+  local build_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-cache)
+        build_args+=(--no-cache)
+        ;;
+      *)
+        fail "Unknown option for client:build: $1 (supported: --no-cache)"
+        ;;
+    esac
+    shift
+  done
+
+  info "Building client image"
+  AERA_SHARED_NETWORK="$NETWORK_NAME" dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" build "${build_args[@]}" nuxt-prod
+  log "Client build command complete"
 }
 
 cmd_edge_up() {
@@ -1091,7 +1127,8 @@ main() {
     backend:up) cmd_backend_up ;;
     backend:wait) cmd_backend_wait ;;
     backend:retry) cmd_backend_retry ;;
-    client:up) cmd_client_up ;;
+    client:build) cmd_client_build "$@" ;;
+    client:up) cmd_client_up "$@" ;;
     backend:down) cmd_backend_down ;;
     backend:restart) cmd_backend_restart ;;
     client:down) cmd_client_down ;;
