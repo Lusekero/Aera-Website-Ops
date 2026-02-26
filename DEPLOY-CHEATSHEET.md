@@ -631,6 +631,7 @@ Backend only:
 
 ```bash
 cd ~/apps/Website
+./aera backend:build --no-cache
 ./aera backend:up
 ./aera backend:wait
 ```
@@ -646,6 +647,7 @@ Proxy only:
 
 ```bash
 cd ~/apps/Website
+./aera edge:build --no-cache
 ./aera edge:up
 ./aera edge:restart
 ```

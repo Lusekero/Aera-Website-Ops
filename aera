@@ -207,6 +207,7 @@ Core deploy flow (backend-first):
   doctor                  Validate files, docker, and compose availability
   network:ensure          Optional shared network creation (idempotent)
   backend:up              Start backend stack
+  backend:build           Build backend images (supports --no-cache)
   backend:down            Stop backend stack
   backend:restart         Restart backend stack
   backend:wait            Wait until mongo/redis/rabbitmq/api are healthy
@@ -216,6 +217,7 @@ Core deploy flow (backend-first):
   client:down             Stop client stack
   client:restart          Restart client stack
   edge:up                 Start proxy edge stack
+  edge:build              Build proxy edge images (supports --no-cache)
   edge:down               Stop proxy edge stack
   cert:init EMAIL=<mail>  Issue Let's Encrypt cert via proxy Makefile
   edge:restart            Restart edge service after cert issuance
@@ -407,6 +409,27 @@ cmd_backend_up() {
   log "Backend start command complete"
 }
 
+cmd_backend_build() {
+  ensure_prerequisites
+  local build_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-cache)
+        build_args+=(--no-cache)
+        ;;
+      *)
+        fail "Unknown option for backend:build: $1 (supported: --no-cache)"
+        ;;
+    esac
+    shift
+  done
+
+  info "Building backend images"
+  dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" build "${build_args[@]}"
+  log "Backend build command complete"
+}
+
 run_client_script() {
   (cd "$CLIENT_DIR" && bash ./scripts/aera "$@")
 }
@@ -490,6 +513,27 @@ cmd_edge_up() {
   info "Starting edge stack"
   dc -f "$EDGE_COMPOSE" up -d
   log "Edge start command complete"
+}
+
+cmd_edge_build() {
+  ensure_prerequisites
+  local build_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-cache)
+        build_args+=(--no-cache)
+        ;;
+      *)
+        fail "Unknown option for edge:build: $1 (supported: --no-cache)"
+        ;;
+    esac
+    shift
+  done
+
+  info "Building edge images"
+  dc -f "$EDGE_COMPOSE" build "${build_args[@]}"
+  log "Edge build command complete"
 }
 
 cmd_cert_init() {
@@ -1125,6 +1169,7 @@ main() {
     doctor) cmd_doctor ;;
     network:ensure) cmd_network_ensure ;;
     backend:up) cmd_backend_up ;;
+    backend:build) cmd_backend_build "$@" ;;
     backend:wait) cmd_backend_wait ;;
     backend:retry) cmd_backend_retry ;;
     client:build) cmd_client_build "$@" ;;
@@ -1134,6 +1179,7 @@ main() {
     client:down) cmd_client_down ;;
     client:restart) cmd_client_restart ;;
     edge:up) cmd_edge_up ;;
+    edge:build) cmd_edge_build "$@" ;;
     edge:down) cmd_edge_down ;;
     cert:init) cmd_cert_init ;;
     edge:restart) cmd_edge_restart ;;

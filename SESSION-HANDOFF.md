@@ -462,3 +462,71 @@ cd ~/apps/Website/backend
 set -a; source .env.production; set +a
 docker exec -i aera-mongo-prod mongosh   -u "$MONGO_INITDB_ROOT_USERNAME"   -p "$MONGO_INITDB_ROOT_PASSWORD"   --authenticationDatabase admin   --eval 'db.adminCommand({ ping: 1 })'
 ```
+
+---
+
+## Update: Production login 403 (`MISSING_API_KEY`) triage checkpoint (2026-02-25)
+
+### What was completed
+
+- Confirmed backend accepts login requests when `x-api-key` is present (curl test moved past API-key layer).
+- Identified real issue as frontend request path intermittently missing API key header in production flow.
+- Implemented/pushed client hardening on `main` (repo: `Aera-Website-Client`):
+    - Commit: `c576a94`
+    - `client/nuxt.config.ts`
+        - `publicApiKey` now resolves from both `NUXT_PUBLIC_API_KEY` and fallback `PUBLIC_API_KEY`.
+    - `client/composables/ApiClient.ts`
+        - Header key resolution hardened with fallback chain and `.trim()` before injecting `x-api-key`.
+- VPS already pulled commit and restarted client container.
+- Environment parity on VPS verified:
+    - `backend/.env.production` `PUBLIC_API_KEY` matches
+    - `client/.env.production` `NUXT_PUBLIC_API_KEY` matches
+    - `docker exec aera-client-prod printenv` shows `NUXT_PUBLIC_API_KEY` present.
+- Edge was restarted after checks.
+
+### Important operational note (copy/paste trap)
+
+- A recurring blocker was shell syntax errors caused by copying markdown-rendered command links into SSH, e.g. `[.env.production](...)`.
+- Only run plain-text commands in terminal.
+
+### Current suspected gap
+
+- `./aera client:up` recreates containers but does not force image rebuild.
+- If client image was built before `c576a94`, old bundle may still be serving (header fix not active).
+
+### Resume from here (first commands next session)
+
+Run exactly on VPS:
+
+```bash
+cd ~/apps/Website/client
+
+ENV_FILE=".env.production"
+COMPOSE_FILE="docker-compose.prod.yml"
+SERVICE="nuxt-prod"
+
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build --no-cache "$SERVICE"
+
+cd ~/apps/Website
+./aera client:down
+./aera client:up
+./aera edge:restart
+./aera status
+```
+
+### Verification checklist after rebuild
+
+1. Browser (incognito / hard refresh):
+    - Submit login form.
+    - In DevTools Network, inspect `POST /api/v1/private-access/auth/login`.
+    - Confirm request includes header `x-api-key`.
+2. API logs during login attempt:
+
+```bash
+docker logs -f aera-api-prod | grep -E "MISSING_API_KEY|INVALID_API_KEY|private-access/auth/login"
+```
+
+### Decision point after verification
+
+- If `x-api-key` is present and 403 disappears, continue with normal login QA (reCAPTCHA/user credentials).
+- If `MISSING_API_KEY` persists, capture one failing request’s full request headers from browser DevTools and continue from that evidence.
