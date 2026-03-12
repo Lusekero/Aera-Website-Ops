@@ -530,3 +530,104 @@ docker logs -f aera-api-prod | grep -E "MISSING_API_KEY|INVALID_API_KEY|private-
 
 - If `x-api-key` is present and 403 disappears, continue with normal login QA (reCAPTCHA/user credentials).
 - If `MISSING_API_KEY` persists, capture one failing request’s full request headers from browser DevTools and continue from that evidence.
+
+---
+
+## Update: Docker Auth Session Stabilization + Remember-Me (2026-03-12)
+
+### Scope completed
+
+- Backend and client auth/session flow was hardened and pushed to `main`.
+- Validation was Docker-first (production image builds succeeded for both backend and client).
+
+### Commits pushed
+
+- Backend (`Aera-Website-API`): `383d881` - fix(auth): stabilize refresh sessions and remember-me behavior
+- Client (`Aera-Website-Client`): `78b9769` - fix(auth): auto-refresh expired tokens during navigation and API calls
+- Related prior client production image/IPX fix already on `main`: `55512ca`
+
+### Backend changes (authoritative)
+
+- Added refresh endpoint:
+    - `POST /api/v1/private-access/auth/refresh-token`
+    - file: `backend/api/src/routes/private/auth.routes.ts`
+- Preserved `rememberMe` through device verification and 2FA continuation:
+    - `backend/api/src/controllers/private/auth/deviceVerification.controller.ts`
+    - `backend/api/src/services/private/auth/login.service.ts`
+- Fixed refresh token rotation matching by using deterministic HMAC hash lookup:
+    - `backend/api/src/services/private/auth/refreshToken.service.ts`
+- Refresh cookie issuance now occurs for both remembered and non-remembered logins after successful 2FA.
+- Session timing moved to env-driven values with defaults:
+    - `ACCESS_TOKEN_EXPIRE_PERIOD=3600`
+    - `REFRESH_TOKEN_EXPIRE_SESSION_PERIOD=43200`
+    - `REFRESH_TOKEN_EXPIRE_REMEMBER_ME_PERIOD=2592000`
+    - refs: `backend/.env.example`, `backend/.env.production.example`, `backend/api/src/utils/constants.util.ts`
+
+### Client changes (authoritative)
+
+- Added refresh-on-expiry retry for private API requests:
+    - `client/composables/AuthFetch.ts`
+- Route middleware now attempts cookie-based refresh before forcing logout:
+    - `client/middleware/auth.ts`
+- On refresh failure, client clears session state and redirects to login (`sessionExpired=true`).
+
+### Resulting behavior
+
+- Session is now activity-based:
+    - Access token expires normally.
+    - Active private usage triggers transparent refresh using HttpOnly refresh cookie.
+    - Inactive users eventually expire when refresh window closes.
+- Keep-me-logged-in now extends refresh window, rather than frequent forced re-login.
+
+### Docker validation completed
+
+- Backend build passed:
+
+```bash
+docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml build aera-api aera-worker
+```
+
+- Client build passed:
+
+```bash
+docker compose --env-file client/.env.production -f client/docker-compose.prod.yml build nuxt-prod
+```
+
+- Build note:
+    - `NUXT_PUBLIC_THEME_COLOR` warning appears if unset (non-blocking).
+
+### Resume commands on VPS (production rollout)
+
+```bash
+cd ~/apps/Website
+git -C backend pull --ff-only
+git -C client pull --ff-only
+
+# Optional explicit session policy (recommended)
+./aera env:set --target=backend --profile=prod \
+  --set ACCESS_TOKEN_EXPIRE_PERIOD=3600 \
+  --set REFRESH_TOKEN_EXPIRE_SESSION_PERIOD=43200 \
+  --set REFRESH_TOKEN_EXPIRE_REMEMBER_ME_PERIOD=2592000
+
+./aera backend:build --no-cache
+./aera backend:up
+./aera backend:wait
+
+./aera client:build --no-cache
+./aera client:up
+
+./aera edge:restart
+./aera status
+```
+
+### Post-deploy verification checklist
+
+1. Login with Keep Me Logged In unchecked and confirm normal login + expected timeout behavior.
+2. Login with Keep Me Logged In checked and confirm session survives beyond access-token expiry.
+3. Verify refresh route activity in backend logs:
+
+```bash
+docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has expired"
+```
+
+4. Confirm protected route navigation no longer force-logs out active users.
