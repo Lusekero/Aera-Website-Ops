@@ -631,3 +631,49 @@ docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has exp
 ```
 
 4. Confirm protected route navigation no longer force-logs out active users.
+
+---
+
+## Update: Session Closeout - IPX Upload Rendering Resolved (2026-03-12)
+
+### Final issue addressed
+
+- Production images still failed to render through Nuxt IPX on:
+    - `/_ipx/_/uploads/images/heroSection/...`
+- Diagnostic result isolated root cause:
+    - Direct edge uploads route worked (`200`).
+    - IPX route failed (`403`).
+    - Client container -> backend upload fetch failed with:
+        - `Forbidden host` / `HOST_NOT_ALLOWED`.
+
+### Root cause
+
+- Backend host allowlisting was enabled (`ENFORCE_ALLOWED_HOSTS=true`) but internal Docker hostnames were not included in `ALLOWED_HOSTS`.
+- IPX internal fetches originated with host `aera-api` (and `aera-api-prod` alias), which backend rejected.
+
+### Production fix applied
+
+- Updated backend production env allowlist to include internal API hosts:
+
+```bash
+./aera env:set --target=backend --profile=prod \
+  --set ALLOWED_HOSTS='test.aera.org.mw,aera-api,aera-api-prod'
+```
+
+- Restarted backend and re-verified.
+
+### Verification evidence (authoritative)
+
+- `direct=200`:
+    - `https://test.aera.org.mw/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+- `ipx=200`:
+    - `https://test.aera.org.mw/_ipx/_/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+- from `aera-client-prod` container to backend uploads:
+    - `status=200` for `http://aera-api:4000/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+
+### Current status at closeout
+
+- Auth/session flow fixes are deployed and verified.
+- Keep-me-logged-in and activity-based session refresh behavior are deployed.
+- Nuxt image rendering for API uploads is working in production.
+- No active blockers at session close.
