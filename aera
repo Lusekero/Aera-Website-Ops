@@ -144,6 +144,10 @@ dc() {
   docker compose "$@"
 }
 
+dc_edge() {
+  dc --env-file "$PROXY_ENV" -f "$EDGE_COMPOSE" "$@"
+}
+
 status_of() {
   docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || true
 }
@@ -187,6 +191,7 @@ ensure_prerequisites() {
   require_file "$EDGE_COMPOSE"
   require_file "$BACKEND_ENV"
   require_file "$CLIENT_ENV"
+  require_file "$PROXY_ENV"
 }
 
 ensure_backend_prerequisites() {
@@ -336,6 +341,7 @@ ensure_client_prerequisites() {
 ensure_proxy_prerequisites() {
   require_cmd docker
   require_file "$EDGE_COMPOSE"
+  require_file "$PROXY_ENV"
   require_file "$PROXY_DIR/Makefile"
 }
 
@@ -366,7 +372,7 @@ cmd_doctor() {
   fi
   dc --env-file "$BACKEND_ENV" -f "$BACKEND_COMPOSE" config >/dev/null
   dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" config >/dev/null
-  dc -f "$EDGE_COMPOSE" config >/dev/null
+  dc_edge config >/dev/null
   log "Doctor checks passed"
 }
 
@@ -398,7 +404,7 @@ cmd_network_ensure() {
 cmd_edge_down() {
   ensure_prerequisites
   info "Stopping edge stack"
-  dc -f "$EDGE_COMPOSE" down
+  dc_edge down
   log "Edge stop command complete"
 }
 
@@ -511,7 +517,7 @@ cmd_client_build() {
 cmd_edge_up() {
   ensure_prerequisites
   info "Starting edge stack"
-  dc -f "$EDGE_COMPOSE" up -d
+  dc_edge up -d
   log "Edge start command complete"
 }
 
@@ -532,7 +538,7 @@ cmd_edge_build() {
   done
 
   info "Building edge images"
-  dc -f "$EDGE_COMPOSE" build "${build_args[@]}"
+  dc_edge build "${build_args[@]}"
   log "Edge build command complete"
 }
 
@@ -548,7 +554,7 @@ cmd_cert_init() {
 cmd_edge_restart() {
   ensure_prerequisites
   info "Restarting edge container"
-  dc -f "$EDGE_COMPOSE" restart aera-edge-prod
+  dc_edge restart aera-edge-prod
   log "Edge restarted"
 }
 
@@ -561,7 +567,7 @@ cmd_status() {
   dc --env-file "$CLIENT_ENV" -f "$CLIENT_COMPOSE" ps
   echo ""
   echo "== EDGE =="
-  dc -f "$EDGE_COMPOSE" ps
+  dc_edge ps
 }
 
 cmd_logs_backend() {
@@ -576,13 +582,13 @@ cmd_logs_client() {
 
 cmd_logs_edge() {
   ensure_prerequisites
-  dc -f "$EDGE_COMPOSE" logs -f --tail=200 aera-edge-prod
+  dc_edge logs -f --tail=200 aera-edge-prod
 }
 
 reload_edge_nginx() {
   if docker ps --format '{{.Names}}' | grep -qx 'aera-edge-prod'; then
-    dc -f "$EDGE_COMPOSE" exec -T aera-edge-prod nginx -s reload >/dev/null 2>&1 || \
-      dc -f "$EDGE_COMPOSE" restart aera-edge-prod >/dev/null
+    dc_edge exec -T aera-edge-prod nginx -s reload >/dev/null 2>&1 || \
+      dc_edge restart aera-edge-prod >/dev/null
   else
     warn "aera-edge-prod is not running; maintenance flag updated only"
   fi
@@ -590,7 +596,7 @@ reload_edge_nginx() {
 
 cmd_maintenance_on() {
   mkdir -p "$MAINTENANCE_DIR"
-  dc -f "$EDGE_COMPOSE" up -d aera-edge-prod >/dev/null 2>&1 || true
+  dc_edge up -d aera-edge-prod >/dev/null 2>&1 || true
   touch "$MAINTENANCE_FLAG"
   reload_edge_nginx
   log "Maintenance mode enabled"
