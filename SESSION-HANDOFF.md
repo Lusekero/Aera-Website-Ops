@@ -677,3 +677,155 @@ docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has exp
 - Keep-me-logged-in and activity-based session refresh behavior are deployed.
 - Nuxt image rendering for API uploads is working in production.
 - No active blockers at session close.
+
+---
+
+## Update: Full Content Seeding Infrastructure (2026-06-22)
+
+### Scope completed
+
+All content under `backend/api/src/content-seeds/` — both `administration/` and `pages/` — is now fully seedable via service-aligned scripts. The seeding infrastructure was built from scratch and validated end-to-end via `npx ts-node` runtime execution.
+
+### What was built
+
+#### Seed runtime utilities (new files)
+
+- `backend/api/src/scripts/seed/helpers/runtime.util.ts`
+    - MongoDB connection/disconnection, URI rewriting for local host
+    - `resolveOrCreateDivisionId`, `resolveAuthorId`
+    - `toNumber` numeric coercion helper
+    - `shouldRefreshCache` guard for container-only Redis
+- `backend/api/src/scripts/seed/helpers/cache-refresh.util.ts`
+    - `guardedRefresh(...)` wrapper — skips Redis refresh when `aera-redis` host is unreachable in local environments
+    - Entity-specific refresh functions
+    - `refreshPageRelatedCaches()` for full page graph
+
+#### Enhanced page content seeder
+
+- `backend/api/src/scripts/seed/create-page-content.script.ts`
+    - Expanded to seed full nested graph per page:
+        - Page record
+        - Schema Markup + SameAs + Sections + Contact Points
+        - Social Media Meta Tags
+        - Hero Section + Banners
+        - Content Sections + Content Blocks
+        - Block children: images, videos, list items, additional information
+    - `normalizePageSeed()` handles both `{ page: {...} }` and flat seed shapes
+    - `toNumber()` auto-coercion of numeric section fields
+
+#### New seed scripts
+
+| Script                                             | Purpose                                                                   |
+| -------------------------------------------------- | ------------------------------------------------------------------------- |
+| `seed/seed-page-content-by-slug.script.ts`         | Canonical single-page seeder by slug (replaces all old per-page wrappers) |
+| `seed/seed-all-pages-content.script.ts`            | Batch seeder for all 20 page payloads                                     |
+| `seed/seed-board-members.script.ts`                | Board members (7 records) with Joi validation + image constraints         |
+| `seed/seed-vacancies.script.ts`                    | Vacancies (4 records)                                                     |
+| `seed/seed-procurements.script.ts`                 | Procurements (5 records) with title/attachment max-length clamping        |
+| `seed/seed-authorized-service-providers.script.ts` | Providers with image path validation                                      |
+| `seed/seed-articles.script.ts`                     | News articles                                                             |
+| `seed/seed-events.script.ts`                       | Events                                                                    |
+| `seed/seed-all-content.script.ts`                  | Master orchestrator: runs all seeders in dependency order                 |
+
+#### Seed constant exports added
+
+- `administration/boardMember.ts`, `administration/procurement.ts`, `administration/vacancy.ts` — arrays now exported
+- All page content-seed files now export top-level named constants used by orchestrator scripts
+
+#### Script cleanup
+
+- Removed 11 obsolete per-page wrapper scripts (e.g. `seed-about-page.script.ts`, `seed-contact-page.script.ts`, etc.) that imported non-existent `.page` modules
+- Replaced all old page command routing with single canonical `seed-page-content-by-slug.script.ts` entrypoint
+
+#### Command wiring
+
+- `backend/api/package.json` — updated to remove stale per-page npm scripts, added new canonical seeder scripts
+- `backend/scripts/aera` — updated `content:seed:page` case to route through slug-based script, updated help text and examples with all valid slugs
+- `backend/scripts/aera` — `content:seed:all`, `content:seed:pages`, `content:seed:board-members`, `content:seed:vacancies`, `content:seed:procurements`, `content:seed:authorized-service-providers`, `content:seed:articles`, `content:seed:events` all wired
+
+#### Documentation
+
+- `backend/docs/operations/CONTENT_SEEDING_GUIDE.md` — comprehensive new guide (quick start, all seeders, validation rules, post-seed verification curls, cache behavior, troubleshooting, common workflow recipes)
+- `backend/docs/operations/DATA_MIGRATION_AND_SEEDING.md` — updated from sparse stub to practical quick-start + pointer to guide
+- `backend/docs/operations/README.md` — linked new guide
+- `backend/docs/operations/CONTENT_OPERATIONS.md` — scoped to manual API workflow, with pointer to seeding guide
+- `backend/api/src/scripts/SEED_SCRIPTS_REFERENCE.md` — quick reference living alongside the scripts
+- `backend/api/src/scripts/docs/SCRIPT_USAGE.md` — removed stale "all content creation scripts have been removed" claim
+
+### Validation outcome (authoritative)
+
+All seeders were validated via `npx ts-node` runtime execution:
+
+- `seed-all-pages-content` — 20 pages created/updated, full nested graph (schema markup, social meta, hero sections, sections/blocks/children)
+- `seed-board-members` — 7 records upserted
+- `seed-vacancies`, `seed-procurements` — all records upserted after Joi validation fixes
+- `seed-authorized-service-providers`, `seed-articles`, `seed-events` — all records upserted
+- `seed-all-content` (full orchestrator) — completed end-to-end successfully:
+
+```
+Connecting to MongoDB...
+Seeding base content (divisions, activities, partners)...
+Seeding all page content...
+Seeding administration (board members, vacancies, procurements)...
+Seeding authorized service providers...
+Seeding articles and events...
+All content seeds completed successfully.
+```
+
+Idempotent re-run confirmed: all 7 board members show `Updated: 7, Created: 0` on subsequent runs.
+
+### Important notes on seeding behavior
+
+- **Idempotent:** All seeders use upsert logic — safe to re-run
+- **Validation:** Service-layer Joi schemas are enforced at seed time (image path regex, field max-lengths, required fields)
+- **Cache refresh:** Guarded wrapper skips Redis refresh when `aera-redis` host is unreachable locally (production Docker runs refresh normally)
+- **Local MongoDB URI rewriting:** `MONGODB_URI` `aera-mongo:27017` is automatically rewritten to `localhost:${DEV_MONGO_HOST_PORT}` for local script runs
+
+### Known remaining items
+
+- Legacy `create-sample-articles.script.ts` in `backend/api/src/scripts/` is not wired to any current command; can be removed or superseded by `seed-articles.script.ts` in a future cleanup pass
+- Seeding scripts are excluded from `tsconfig.json` (`src/scripts/**/*`); `npm run typecheck` does not validate them — `npx ts-node` runtime execution is the authoritative test path
+
+### Resume from here next session (VPS content seeding)
+
+Content seeding has only been validated locally. To apply on VPS:
+
+```bash
+cd ~/apps/Website
+
+# Pull latest backend source
+git -C backend pull --ff-only
+
+# Optional: rebuild backend image to pick up any code changes
+./aera backend:build
+./aera backend:up
+./aera backend:wait
+
+# Seed all content (idempotent - safe to run on first deploy or re-run)
+./aera content:seed:all
+
+# Or selectively:
+./aera content:seed:divisions
+./aera content:seed:pages
+./aera content:seed:board-members
+./aera content:seed:vacancies
+./aera content:seed:procurements
+./aera content:seed:authorized-service-providers
+./aera content:seed:articles
+./aera content:seed:events
+
+# Clear cache after seeding if needed
+./aera content:cache:clear
+
+# Verify via public endpoint
+curl -s -H "x-api-key: $PUBLIC_API_KEY" https://test.aera.org.mw/api/v1/public/pages/about | head -c 500
+```
+
+### Post-seeding verification checklist (VPS)
+
+- [ ] Run `./aera content:seed:all` — no errors, "completed successfully" message
+- [ ] Curl `GET /api/v1/public/pages/about` and confirm nested sections/blocks in response
+- [ ] Curl `GET /api/v1/public/about/board-members` and confirm 7 members returned
+- [ ] Curl `GET /api/v1/public/articles` and confirm articles returned
+- [ ] Browser test: navigate all seeded pages on frontend and confirm content renders
+- [ ] Confirm Nuxt IPX image rendering still works for any seeded images
