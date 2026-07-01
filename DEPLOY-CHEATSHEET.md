@@ -405,7 +405,7 @@ source .env.production
 
 read -s -p "New Mongo root password: " NEW_PASS; echo
 
-docker exec -i aera-mongo-prod mongosh \
+docker exec -i REPLACE_WITH_MONGO_CONTAINER mongosh \
   -u "$MONGO_INITDB_ROOT_USERNAME" \
   -p "$MONGO_INITDB_ROOT_PASSWORD" \
   --authenticationDatabase admin \
@@ -414,7 +414,7 @@ docker exec -i aera-mongo-prod mongosh \
 cd ~/apps/Website
 ./aera env:set --target=backend --profile=prod \
   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_PASS" \
-  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@aera-mongo:27017/$MONGO_INITDB_DATABASE"
+  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@REPLACE_WITH_MONGO_SERVICE:27017/$MONGO_INITDB_DATABASE"
 
 ./aera backend:up
 ./aera backend:wait
@@ -449,12 +449,12 @@ cd ~/apps/Website
 ./aera env:set --target=backend --profile=dev --set JWT_SECRET='dev-jwt-secret' --set API_DOMAIN=localhost
 
 # Client production/public env
-./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads --set NUXT_PUBLIC_APP_ORIGIN=https://test.aera.org.mw
+./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads --set NUXT_PUBLIC_APP_ORIGIN=https://REPLACE_WITH_SECONDARY_DOMAIN
 ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_RECAPTCHA_SITE_KEY='<site_key_from_recaptcha>'
 ./aera env:set --target=client --profile=prod --set RECAPTCHA_SITE_KEY='<site_key_from_recaptcha>'
 
 # Proxy production routing/env
-./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=test.aera.org.mw --set SECONDARY_DOMAIN=aera.org.mw --set TLS_CERT_DOMAIN=test.aera.org.mw
+./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN --set SECONDARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN --set TLS_CERT_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
 
 # Read back values
 ./aera env:get --target=backend --profile=prod --get JWT_SECRET --get PUBLIC_API_KEY
@@ -488,11 +488,11 @@ Environment separation rule:
 Test-first values in proxy env:
 
 ```dotenv
-PRIMARY_DOMAIN=test.aera.org.mw
-SECONDARY_DOMAIN=aera.org.mw
-TLS_CERT_DOMAIN=test.aera.org.mw
+PRIMARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
+SECONDARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN
+TLS_CERT_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
 CLIENT_UPSTREAM=nuxt-prod:3000
-API_UPSTREAM=aera-api-prod:4000
+API_UPSTREAM=REPLACE_WITH_API_CONTAINER:4000
 CLIENT_MAX_BODY_SIZE=200m
 ```
 
@@ -500,11 +500,11 @@ Important first-issuance note (staged DNS):
 
 - `./aera cert:init` requests certs for `TLS_CERT_DOMAIN` plus distinct `PRIMARY_DOMAIN`/`SECONDARY_DOMAIN` values.
 - If only the test domain currently points to VPS, set `SECONDARY_DOMAIN` equal to `PRIMARY_DOMAIN` temporarily (or to the same test domain) before first `cert:init`.
-- After `aera.org.mw` DNS points to VPS, restore `SECONDARY_DOMAIN=aera.org.mw` and re-run `./aera cert:init`.
+- After `REPLACE_WITH_PRIMARY_DOMAIN` DNS points to VPS, restore `SECONDARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN` and re-run `./aera cert:init`.
 
 Configure SMTP from cPanel (production email sending):
 
-1. In cPanel, open `Email Accounts` for your mailbox (example: `info@aera.org.mw`) and click `Connect Devices` / `Set Up Mail Client`.
+1. In cPanel, open `Email Accounts` for your mailbox (example: `REPLACE_WITH_EMAIL_ADDRESS`) and click `Connect Devices` / `Set Up Mail Client`.
 2. Copy Outgoing (SMTP): host, port, encryption mode, username, password.
 3. Map values into `~/apps/Website/backend/.env.production`:
 
@@ -514,14 +514,14 @@ EMAIL_PORT=<465_or_587>
 EMAIL_SECURE=<true_for_465_or_false_for_587>
 EMAIL_USER=<full_mailbox_address>
 EMAIL_PASSWORD=<mailbox_password>
-EMAIL_FROM='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+EMAIL_FROM='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ```
 
 Apply and verify:
 
 ```bash
 cd ~/apps/Website
-./aera smtp:configure --provider=cpanel --host=<cpanel_smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=cpanel --host=<cpanel_smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:show
 ./aera smtp:test --to=<your_test_email>
 ./aera logs:backend
@@ -531,20 +531,20 @@ Platform switch later (example to Microsoft 365) is a single command + restart:
 
 ```bash
 cd ~/apps/Website
-./aera smtp:configure --provider=m365 --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=m365 --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:test --to=<your_test_email>
 ```
 
 Tip: use the exact host/port/encryption pair from provider docs. Common values are `465` (SSL/TLS, secure=true) or `587` (STARTTLS, secure=false).
-`./aera smtp:configure` updates `.env.production` and recreates only backend runtime services (`aera-api`, `aera-worker`) by default.
-Advanced option: add `--worker-only` to restart just `aera-worker` (use only if your email sending path is worker-only).
+`./aera smtp:configure` updates `.env.production` and recreates only backend runtime services (`REPLACE_WITH_API_SERVICE`, `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME`) by default.
+Advanced option: add `--worker-only` to restart just `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME` (use only if your email sending path is worker-only).
 
 ---
 
 ## 6) DNS check from local machine
 
 ```bash
-dig +short test.aera.org.mw
+dig +short REPLACE_WITH_SECONDARY_DOMAIN
 ```
 
 Must resolve to VPS public IP.
@@ -657,7 +657,7 @@ cd ~/apps/Website
 Use these from `~/apps/Website` to keep one Laravel-like command style:
 
 ```bash
-ADMIN_PASSWORD='StrongPassword123!' ADMIN_EMAIL='admin@aera.org.mw' ADMIN_FIRSTNAME='System' ADMIN_LASTNAME='Admin' ./aera content:seed:admin
+ADMIN_PASSWORD='StrongPassword123!' ADMIN_EMAIL='REPLACE_WITH_EMAIL_ADDRESS' ADMIN_FIRSTNAME='System' ADMIN_LASTNAME='Admin' ./aera content:seed:admin
 ./aera content:cache:clear
 ```
 
@@ -665,7 +665,7 @@ Equivalent backend-local commands (same operation):
 
 ```bash
 cd ~/apps/Website/backend
-ADMIN_PASSWORD='StrongPassword123!' ADMIN_EMAIL='admin@aera.org.mw' ADMIN_FIRSTNAME='System' ADMIN_LASTNAME='Admin' ./scripts/aera content:seed:admin
+ADMIN_PASSWORD='StrongPassword123!' ADMIN_EMAIL='REPLACE_WITH_EMAIL_ADDRESS' ADMIN_FIRSTNAME='System' ADMIN_LASTNAME='Admin' ./scripts/aera content:seed:admin
 ./scripts/aera content:cache:clear
 ```
 
@@ -694,7 +694,7 @@ docker compose --env-file ../backend/.env.production -f ../backend/docker-compos
 ```
 
 ```bash
-timeout 600 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" aera-mongo-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-redis-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-rabbitmq-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-api-prod 2>/dev/null)" = "healthy" ]; do echo "Waiting for backend health checks..."; sleep 5; done'
+timeout 600 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_MONGO_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_REDIS_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_RABBITMQ_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_API_CONTAINER 2>/dev/null)" = "healthy" ]; do echo "Waiting for backend health checks..."; sleep 5; done'
 ```
 
 If the wait times out, inspect backend status/logs before starting client:
@@ -706,13 +706,13 @@ docker compose --env-file ../backend/.env.production -f ../backend/docker-compos
 Then wait 5 minutes before retrying backend startup + health wait:
 
 ```bash
-sleep 300 && docker compose --env-file ../backend/.env.production -f ../backend/docker-compose.production.yml up -d && timeout 600 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" aera-mongo-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-redis-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-rabbitmq-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-api-prod 2>/dev/null)" = "healthy" ]; do echo "Waiting for backend health checks (retry)..."; sleep 5; done'
+sleep 300 && docker compose --env-file ../backend/.env.production -f ../backend/docker-compose.production.yml up -d && timeout 600 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_MONGO_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_REDIS_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_RABBITMQ_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_API_CONTAINER 2>/dev/null)" = "healthy" ]; do echo "Waiting for backend health checks (retry)..."; sleep 5; done'
 ```
 
 Final guard (abort if any backend service is not healthy):
 
 ```bash
-bash -ec '[ "$(docker inspect -f "{{.State.Health.Status}}" aera-mongo-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-redis-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-rabbitmq-prod 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" aera-api-prod 2>/dev/null)" = "healthy" ] || { echo "Backend is not fully healthy. Aborting before client startup."; exit 1; }'
+bash -ec '[ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_MONGO_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_REDIS_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_RABBITMQ_CONTAINER 2>/dev/null)" = "healthy" ] && [ "$(docker inspect -f "{{.State.Health.Status}}" REPLACE_WITH_API_CONTAINER 2>/dev/null)" = "healthy" ] || { echo "Backend is not fully healthy. Aborting before client startup."; exit 1; }'
 ```
 
 ```bash
@@ -742,13 +742,13 @@ make prod-cert-init EMAIL=<YOUR_EMAIL>
 ```
 
 ```bash
-docker compose -f prod/docker-compose.edge.prod.yml restart aera-edge-prod
+docker compose -f prod/docker-compose.edge.prod.yml restart REPLACE_WITH_EDGE_CONTAINER
 ```
 
 ```bash
 make status
-curl -I http://test.aera.org.mw
-curl -I https://test.aera.org.mw
+curl -I http://REPLACE_WITH_SECONDARY_DOMAIN
+curl -I https://REPLACE_WITH_SECONDARY_DOMAIN
 ```
 
 ---
@@ -756,7 +756,7 @@ curl -I https://test.aera.org.mw
 ## 8) Logs/troubleshooting
 
 ```bash
-cd ~/apps/Website/proxy && docker compose -f prod/docker-compose.edge.prod.yml logs -f aera-edge-prod
+cd ~/apps/Website/proxy && docker compose -f prod/docker-compose.edge.prod.yml logs -f REPLACE_WITH_EDGE_CONTAINER
 ```
 
 ```bash
@@ -798,8 +798,8 @@ Behavior:
 Edit `~/apps/Website/proxy/prod/.env.edge.prod`:
 
 ```dotenv
-PRIMARY_DOMAIN=aera.org.mw
-SECONDARY_DOMAIN=test.aera.org.mw
+PRIMARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN
+SECONDARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
 # keep or change TLS_CERT_DOMAIN intentionally
 ```
 

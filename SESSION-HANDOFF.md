@@ -25,7 +25,7 @@ Implemented/available commands include:
 
 Important behavior:
 
-- `smtp:configure` updates backend `.env.production` keys and by default recreates only `aera-api` + `aera-worker`.
+- `smtp:configure` updates backend `.env.production` keys and by default recreates only `REPLACE_WITH_API_SERVICE` + `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME`.
 - Optional `--worker-only` exists for minimal-impact mail path updates.
 
 ### 2) Production SMTP hardening + dynamic provider switching
@@ -81,7 +81,7 @@ Important:
     - Pulled on VPS and rebuilt client image from latest source.
 - Edge/TLS brought online successfully for test domain:
     - Bootstrap cert path handled.
-    - Let’s Encrypt certificate successfully issued for `test.aera.org.mw`.
+    - Let’s Encrypt certificate successfully issued for `REPLACE_WITH_SECONDARY_DOMAIN`.
     - HTTPS serving correctly (`301` http→https, `200` over https).
 - Proxy certbot sidecar stability fixes were applied in proxy compose and deployed.
 
@@ -95,15 +95,15 @@ Important:
 ### Current runtime state (authoritative)
 
 - `backend`: healthy (`mongo`, `redis`, `rabbitmq`, `api`, `worker`).
-- `client`: healthy (`aera-client-prod`).
-- `edge`: healthy (`aera-edge-prod`) and serving TLS on `test.aera.org.mw`.
+- `client`: healthy (`REPLACE_WITH_CONTAINER_OR_SERVICE_NAME`).
+- `edge`: healthy (`REPLACE_WITH_EDGE_CONTAINER`) and serving TLS on `REPLACE_WITH_SECONDARY_DOMAIN`.
 - `certbot`: configured and running with renewal loop behavior corrected.
 
 ### Current domain mode (important)
 
-- Active primary/testing domain for this VPS: `test.aera.org.mw`.
+- Active primary/testing domain for this VPS: `REPLACE_WITH_SECONDARY_DOMAIN`.
 - `proxy/prod/.env.edge.prod` is currently set for test-domain-first operation.
-- `aera.org.mw` cutover is deferred until content/admin setup is complete.
+- `REPLACE_WITH_PRIMARY_DOMAIN` cutover is deferred until content/admin setup is complete.
 
 ### Resume here next session (backend seeding + content ops)
 
@@ -114,7 +114,7 @@ Run from `~/apps/Website`:
 
 # Seed default division + admin user (set strong values)
 ADMIN_PASSWORD='<STRONG_PASSWORD>' \
-ADMIN_EMAIL='admin@aera.org.mw' \
+ADMIN_EMAIL='REPLACE_WITH_EMAIL_ADDRESS' \
 ADMIN_FIRSTNAME='System' \
 ADMIN_LASTNAME='Admin' \
 ./aera content:seed:admin
@@ -127,17 +127,17 @@ Optional verification after seeding:
 
 ```bash
 ./aera logs:backend
-curl -Ik https://test.aera.org.mw
+curl -Ik https://REPLACE_WITH_SECONDARY_DOMAIN
 ```
 
 ### Planned later cutover (no migration)
 
-When ready to switch primary domain to `aera.org.mw`:
+When ready to switch primary domain to `REPLACE_WITH_PRIMARY_DOMAIN`:
 
 - Update `proxy/prod/.env.edge.prod`:
-    - `PRIMARY_DOMAIN=aera.org.mw`
-    - `SECONDARY_DOMAIN=test.aera.org.mw`
-    - `TLS_CERT_DOMAIN=aera.org.mw`
+    - `PRIMARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN`
+    - `SECONDARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN`
+    - `TLS_CERT_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN`
 - Then run:
 
 ```bash
@@ -174,7 +174,7 @@ If backend health wait times out:
 ### Configure (example cPanel)
 
 ```bash
-./aera smtp:configure --provider=cpanel --host=<smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<mailbox> --password='<password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=cpanel --host=<smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<mailbox> --password='<password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:show
 ./aera smtp:test --to=<recipient>
 ```
@@ -182,7 +182,7 @@ If backend health wait times out:
 ### Switch provider later (example M365)
 
 ```bash
-./aera smtp:configure --provider=m365 --user=<mailbox> --password='<password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=m365 --user=<mailbox> --password='<password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:test --to=<recipient>
 ```
 
@@ -375,7 +375,7 @@ cd ~/apps/Website
 
 ```bash
 # 1. Change MongoDB root password inside the running container:
-docker exec -i aera-mongo-prod mongosh \
+docker exec -i REPLACE_WITH_MONGO_CONTAINER mongosh \
   -u "$MONGO_INITDB_ROOT_USERNAME" \
   -p "$MONGO_INITDB_ROOT_PASSWORD" \
   --authenticationDatabase admin \
@@ -385,7 +385,7 @@ docker exec -i aera-mongo-prod mongosh \
 cd ~/apps/Website
 ./aera env:set --target=backend --profile=prod \
   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_PASS" \
-  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@aera-mongo:27017/$MONGO_INITDB_DATABASE"
+  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@REPLACE_WITH_MONGO_SERVICE:27017/$MONGO_INITDB_DATABASE"
 
 # 3. Restart backend stack:
 ./aera backend:up
@@ -419,7 +419,7 @@ cd ~/apps/Website
 ### Last known runtime state
 
 - `mongo`, `redis`, `rabbitmq` healthy.
-- `aera-api-prod` restart loop (`starting`/`unhealthy`).
+- `REPLACE_WITH_API_CONTAINER` restart loop (`starting`/`unhealthy`).
 - API logs repeatedly show `Authentication failed.`
 
 ### First commands to run next session (fresh bootstrap path)
@@ -444,7 +444,7 @@ cd ..
 NEW_MONGO_PASS='AeraMongoPass2026'
 NEW_RMQ_PASS='AeraRabbitPass2026'
 
-./aera env:set --target=backend --profile=prod   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_MONGO_PASS"   --set RABBITMQ_PASSWORD="$NEW_RMQ_PASS"   --set MONGODB_URI="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${NEW_MONGO_PASS}@aera-mongo:27017/${MONGO_INITDB_DATABASE}?authSource=admin"   --set RABBITMQ_URL="amqp://${RABBITMQ_USER}:${NEW_RMQ_PASS}@aera-rabbitmq:${RABBITMQ_PORT}"
+./aera env:set --target=backend --profile=prod   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_MONGO_PASS"   --set RABBITMQ_PASSWORD="$NEW_RMQ_PASS"   --set MONGODB_URI="mongodb://${MONGO_INITDB_ROOT_USERNAME}:${NEW_MONGO_PASS}@REPLACE_WITH_MONGO_SERVICE:27017/${MONGO_INITDB_DATABASE}?authSource=admin"   --set RABBITMQ_URL="amqp://${RABBITMQ_USER}:${NEW_RMQ_PASS}@REPLACE_WITH_RABBITMQ_SERVICE:${RABBITMQ_PORT}"
 
 ./aera backend:up
 ./aera backend:wait
@@ -455,12 +455,12 @@ NEW_RMQ_PASS='AeraRabbitPass2026'
 ```bash
 cd ~/apps/Website
 ./aera status
-docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml logs --tail=120 aera-api
-docker inspect aera-api-prod --format 'status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml logs --tail=120 REPLACE_WITH_API_SERVICE
+docker inspect REPLACE_WITH_API_CONTAINER --format 'status={{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
 
 cd ~/apps/Website/backend
 set -a; source .env.production; set +a
-docker exec -i aera-mongo-prod mongosh   -u "$MONGO_INITDB_ROOT_USERNAME"   -p "$MONGO_INITDB_ROOT_PASSWORD"   --authenticationDatabase admin   --eval 'db.adminCommand({ ping: 1 })'
+docker exec -i REPLACE_WITH_MONGO_CONTAINER mongosh   -u "$MONGO_INITDB_ROOT_USERNAME"   -p "$MONGO_INITDB_ROOT_PASSWORD"   --authenticationDatabase admin   --eval 'db.adminCommand({ ping: 1 })'
 ```
 
 ---
@@ -481,7 +481,7 @@ docker exec -i aera-mongo-prod mongosh   -u "$MONGO_INITDB_ROOT_USERNAME"   -p "
 - Environment parity on VPS verified:
     - `backend/.env.production` `PUBLIC_API_KEY` matches
     - `client/.env.production` `NUXT_PUBLIC_API_KEY` matches
-    - `docker exec aera-client-prod printenv` shows `NUXT_PUBLIC_API_KEY` present.
+    - `docker exec REPLACE_WITH_CONTAINER_OR_SERVICE_NAME printenv` shows `NUXT_PUBLIC_API_KEY` present.
 - Edge was restarted after checks.
 
 ### Important operational note (copy/paste trap)
@@ -523,7 +523,7 @@ cd ~/apps/Website
 2. API logs during login attempt:
 
 ```bash
-docker logs -f aera-api-prod | grep -E "MISSING_API_KEY|INVALID_API_KEY|private-access/auth/login"
+docker logs -f REPLACE_WITH_API_CONTAINER | grep -E "MISSING_API_KEY|INVALID_API_KEY|private-access/auth/login"
 ```
 
 ### Decision point after verification
@@ -584,7 +584,7 @@ docker logs -f aera-api-prod | grep -E "MISSING_API_KEY|INVALID_API_KEY|private-
 - Backend build passed:
 
 ```bash
-docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml build aera-api aera-worker
+docker compose --env-file backend/.env.production -f backend/docker-compose.production.yml build REPLACE_WITH_API_SERVICE REPLACE_WITH_CONTAINER_OR_SERVICE_NAME
 ```
 
 - Client build passed:
@@ -627,7 +627,7 @@ git -C client pull --ff-only
 3. Verify refresh route activity in backend logs:
 
 ```bash
-docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has expired"
+docker logs -f REPLACE_WITH_API_CONTAINER | grep -E "refresh-token|Unauthorized|Token has expired"
 ```
 
 4. Confirm protected route navigation no longer force-logs out active users.
@@ -649,7 +649,7 @@ docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has exp
 ### Root cause
 
 - Backend host allowlisting was enabled (`ENFORCE_ALLOWED_HOSTS=true`) but internal Docker hostnames were not included in `ALLOWED_HOSTS`.
-- IPX internal fetches originated with host `aera-api` (and `aera-api-prod` alias), which backend rejected.
+- IPX internal fetches originated with host `REPLACE_WITH_API_SERVICE` (and `REPLACE_WITH_API_CONTAINER` alias), which backend rejected.
 
 ### Production fix applied
 
@@ -657,7 +657,7 @@ docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has exp
 
 ```bash
 ./aera env:set --target=backend --profile=prod \
-  --set ALLOWED_HOSTS='test.aera.org.mw,aera-api,aera-api-prod'
+  --set ALLOWED_HOSTS='REPLACE_WITH_SECONDARY_DOMAIN,REPLACE_WITH_API_SERVICE,REPLACE_WITH_API_CONTAINER'
 ```
 
 - Restarted backend and re-verified.
@@ -665,11 +665,11 @@ docker logs -f aera-api-prod | grep -E "refresh-token|Unauthorized|Token has exp
 ### Verification evidence (authoritative)
 
 - `direct=200`:
-    - `https://test.aera.org.mw/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+    - `https://REPLACE_WITH_SECONDARY_DOMAIN/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
 - `ipx=200`:
-    - `https://test.aera.org.mw/_ipx/_/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
-- from `aera-client-prod` container to backend uploads:
-    - `status=200` for `http://aera-api:4000/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+    - `https://REPLACE_WITH_SECONDARY_DOMAIN/_ipx/_/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
+- from `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME` container to backend uploads:
+    - `status=200` for `http://REPLACE_WITH_API_SERVICE:4000/api/v1/uploads/images/heroSection/banner-1773215921623-823233085.jpeg`
 
 ### Current status at closeout
 
@@ -696,7 +696,7 @@ All content under `backend/api/src/content-seeds/` — both `administration/` an
     - `toNumber` numeric coercion helper
     - `shouldRefreshCache` guard for container-only Redis
 - `backend/api/src/scripts/seed/helpers/cache-refresh.util.ts`
-    - `guardedRefresh(...)` wrapper — skips Redis refresh when `aera-redis` host is unreachable in local environments
+    - `guardedRefresh(...)` wrapper — skips Redis refresh when `REPLACE_WITH_REDIS_SERVICE` host is unreachable in local environments
     - Entity-specific refresh functions
     - `refreshPageRelatedCaches()` for full page graph
 
@@ -778,8 +778,8 @@ Idempotent re-run confirmed: all 7 board members show `Updated: 7, Created: 0` o
 
 - **Idempotent:** All seeders use upsert logic — safe to re-run
 - **Validation:** Service-layer Joi schemas are enforced at seed time (image path regex, field max-lengths, required fields)
-- **Cache refresh:** Guarded wrapper skips Redis refresh when `aera-redis` host is unreachable locally (production Docker runs refresh normally)
-- **Local MongoDB URI rewriting:** `MONGODB_URI` `aera-mongo:27017` is automatically rewritten to `localhost:${DEV_MONGO_HOST_PORT}` for local script runs
+- **Cache refresh:** Guarded wrapper skips Redis refresh when `REPLACE_WITH_REDIS_SERVICE` host is unreachable locally (production Docker runs refresh normally)
+- **Local MongoDB URI rewriting:** `MONGODB_URI` `REPLACE_WITH_MONGO_SERVICE:27017` is automatically rewritten to `localhost:${DEV_MONGO_HOST_PORT}` for local script runs
 
 ### Known remaining items
 
@@ -818,7 +818,7 @@ git -C backend pull --ff-only
 ./aera content:cache:clear
 
 # Verify via public endpoint
-curl -s -H "x-api-key: $PUBLIC_API_KEY" https://test.aera.org.mw/api/v1/public/pages/about | head -c 500
+curl -s -H "x-api-key: $PUBLIC_API_KEY" https://REPLACE_WITH_SECONDARY_DOMAIN/api/v1/public/pages/about | head -c 500
 ```
 
 ### Post-seeding verification checklist (VPS)
@@ -829,3 +829,151 @@ curl -s -H "x-api-key: $PUBLIC_API_KEY" https://test.aera.org.mw/api/v1/public/p
 - [ ] Curl `GET /api/v1/public/articles` and confirm articles returned
 - [ ] Browser test: navigate all seeded pages on frontend and confirm content renders
 - [ ] Confirm Nuxt IPX image rendering still works for any seeded images
+
+---
+
+## Update: Newsletter Publish System Design (2026-06-26)
+
+### Goal
+
+Implement a robust newsletter publish flow that sends the monthly newsletter (including populated articles and optional events) to all verified subscribers at scale without blocking API responsiveness.
+
+### Existing foundation confirmed
+
+- RabbitMQ email queue and worker are already in place:
+    - `backend/api/src/worker.ts`
+    - queue: `email_queue`
+    - retry logic already exists (up to 3 attempts)
+- Redis-backed email template loading is already in place:
+    - `backend/api/src/utils/redisClient.util.ts`
+    - templates folder: `backend/api/src/emails/templates/`
+- Subscription verification and confirmation email flows are already queue-driven:
+    - `backend/api/src/emails/subscriptionVerification.email.ts`
+    - `backend/api/src/emails/subscriptionConfirmation.email.ts`
+- Newsletter CRUD and monthly uniqueness checks are already implemented:
+    - `backend/api/src/services/private/newsletter/newsletter.service.ts`
+    - `backend/api/src/services/private/newsletter/verification.service.ts`
+
+### Gaps identified before broadcast implementation
+
+1. Subscriber audience filtering
+    - Current subscription cache loader (`Subscription.find()`) does not explicitly filter to verified subscribers.
+    - Newsletter blasts must target only `isVerified: true` recipients.
+
+2. Producer connection overhead
+    - Current email producer pattern opens/closes RabbitMQ connection per send call.
+    - This is acceptable for transactional emails but inefficient for high-volume campaign fan-out.
+
+3. Worker throughput
+    - Worker currently uses `prefetch(1)` which is conservative and may be too slow for large sends.
+
+4. Publish operation lifecycle
+    - Newsletter service has create/update/delete, but no dedicated publish endpoint and no campaign-level tracking.
+
+5. Public links in newsletter email
+    - Newsletter email content needs stable frontend URLs for article/event read-more actions.
+
+### Recommended architecture (queue-first, non-blocking)
+
+#### A. Publish API endpoint
+
+- Add `PUT /private-access/newsletter/publish/:id`.
+- Validate:
+    - newsletter exists
+    - not already published
+    - contains at least one article
+- Transition newsletter state to publishing/published workflow state.
+- Enqueue campaign job and return `202 Accepted` quickly.
+
+#### B. Two-stage queue strategy
+
+1. Campaign queue (`newsletter_publish_queue`)
+    - One job per newsletter publish action.
+    - Worker prepares audience and fan-out.
+
+2. Recipient queue (`newsletter_recipient_queue`)
+    - One job per recipient email send.
+    - Enables horizontal scaling and retry isolation.
+
+#### C. Campaign worker responsibilities
+
+- Load newsletter with fully populated article and event details.
+- Build canonical campaign payload snapshot.
+- Query verified subscribers only.
+- Chunk recipients and enqueue recipient jobs in batches.
+- Update campaign counters/progress.
+
+#### D. Recipient worker responsibilities
+
+- Render newsletter template with dynamic sections:
+    - Articles section always rendered.
+    - Events section rendered conditionally only if events exist.
+- Send using transporter with retries and failure classification.
+- Persist send result (`sent`/`failed`) for observability.
+
+### Data model additions recommended
+
+1. `newsletter_campaigns`
+    - `newsletterId`
+    - `issueDate`
+    - `status` (`queued`, `processing`, `completed`, `failed`)
+    - `queuedCount`, `sentCount`, `failedCount`
+    - `startedAt`, `completedAt`
+    - `initiatedBy`
+
+2. (Optional but recommended) `newsletter_campaign_recipients`
+    - `campaignId`
+    - `email`
+    - `status`
+    - `attempts`
+    - `lastError`
+    - unique index on (`campaignId`, `email`) for idempotency
+
+### Idempotency and reliability requirements
+
+- Use recipient-level idempotency key (`campaignId + email`) to prevent duplicates.
+- Use dead-letter queue for exhausted retries.
+- Ensure publish endpoint is safe against duplicate clicks/race conditions.
+- Maintain explicit campaign state transitions.
+
+### Performance and delivery tuning
+
+- Enable SMTP pooling for campaign sends in `emailTransporter`.
+- Increase worker prefetch/concurrency gradually (e.g., 5 -> 10 -> 20) based on provider limits.
+- Batch queue publish operations to reduce broker round trips.
+- Keep API request path non-blocking (enqueue and return).
+
+### Suggested implementation phases
+
+#### Phase 1 (foundation)
+
+- Add publish endpoint, controller method, and service method.
+- Add verified-subscriber-only query path.
+- Add campaign queue job enqueue.
+
+#### Phase 2 (email content and fan-out)
+
+- Add newsletter email HTML template (`newsletterBroadcast.template.html`).
+- Build server-side section renderers for article/event blocks.
+- Add campaign worker + recipient job fan-out.
+
+#### Phase 3 (tracking and operability)
+
+- Add campaign persistence and progress tracking.
+- Add admin-visible publish result summary (queued/sent/failed).
+- Add failure reporting and replay controls.
+
+#### Phase 4 (scale hardening)
+
+- SMTP pool tuning, queue prefetch tuning, and load testing.
+- Add DLQ monitoring/alerts.
+- Add runbook for campaign retries and incident handling.
+
+### Definition of done (newsletter publish)
+
+- Publish click triggers non-blocking enqueue and immediate API response.
+- Only verified subscribers receive campaign email.
+- Email includes article section with read-more links.
+- Event section is optional and only rendered when newsletter has events.
+- Campaign completion metrics are visible and auditable.
+- Retries and idempotency prevent duplicate sends.

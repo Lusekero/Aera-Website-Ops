@@ -5,7 +5,7 @@ This guide shows you how to:
 1. SSH into your VPS using VS Code
 2. Prepare the VPS safely for Docker deployment
 3. Deploy the `backend`, `client`, and `proxy` stacks
-4. Issue production TLS certificates for `test.aera.org.mw` (and later `aera.org.mw`)
+4. Issue production TLS certificates for `REPLACE_WITH_SECONDARY_DOMAIN` (and later `REPLACE_WITH_PRIMARY_DOMAIN`)
 
 ---
 
@@ -16,7 +16,7 @@ This guide shows you how to:
     - SSH port
     - SSH username
     - SSH password
-- Domain DNS control for `test.aera.org.mw`
+- Domain DNS control for `REPLACE_WITH_SECONDARY_DOMAIN`
 - This project structure on your local machine:
     - `Website/backend`
     - `Website/client`
@@ -49,7 +49,7 @@ This guide shows you how to:
 Edit `~/.ssh/config` and add:
 
 ```sshconfig
-Host aera-vps
+Host REPLACE_WITH_CONTAINER_OR_SERVICE_NAME
   HostName <VPS_IP>
   User <SSH_USERNAME>
   Port <SSH_PORT>
@@ -68,7 +68,7 @@ chmod 600 ~/.ssh/config
 
 1. Press `F1`
 2. Run: `Remote-SSH: Connect to Host...`
-3. Choose `aera-vps`
+3. Choose `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME`
 4. Enter VPS password when prompted
 
 You are now working directly on the VPS filesystem in VS Code.
@@ -240,7 +240,7 @@ source .env.production
 
 read -s -p "New Mongo root password: " NEW_PASS; echo
 
-docker exec -i aera-mongo-prod mongosh \
+docker exec -i REPLACE_WITH_MONGO_CONTAINER mongosh \
   -u "$MONGO_INITDB_ROOT_USERNAME" \
   -p "$MONGO_INITDB_ROOT_PASSWORD" \
   --authenticationDatabase admin \
@@ -249,7 +249,7 @@ docker exec -i aera-mongo-prod mongosh \
 cd ~/apps/Website
 ./aera env:set --target=backend --profile=prod \
   --set MONGO_INITDB_ROOT_PASSWORD="$NEW_PASS" \
-  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@aera-mongo:27017/$MONGO_INITDB_DATABASE"
+  --set MONGODB_URI="mongodb://$MONGO_INITDB_ROOT_USERNAME:$NEW_PASS@REPLACE_WITH_MONGO_SERVICE:27017/$MONGO_INITDB_DATABASE"
 
 ./aera backend:up
 ./aera backend:wait
@@ -283,11 +283,11 @@ Create/edit:
 For test-first rollout, set:
 
 ```dotenv
-PRIMARY_DOMAIN=test.aera.org.mw
-SECONDARY_DOMAIN=aera.org.mw
-TLS_CERT_DOMAIN=test.aera.org.mw
+PRIMARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
+SECONDARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN
+TLS_CERT_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
 CLIENT_UPSTREAM=nuxt-prod:3000
-API_UPSTREAM=aera-api-prod:4000
+API_UPSTREAM=REPLACE_WITH_API_CONTAINER:4000
 CLIENT_MAX_BODY_SIZE=200m
 ```
 
@@ -301,7 +301,7 @@ From `~/apps/Website`, manage backend/client/proxy env keys with one command pat
 ./aera env:set --target=backend --profile=prod --set JWT_SECRET='<jwt_secret>' --set REFRESH_TOKEN_ENCRYPTION_KEY='<refresh_secret>' --set PUBLIC_API_KEY='<public_api_key>'
 ./aera client:api-key:sync --profile=prod
 ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads
-./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=test.aera.org.mw --set TLS_CERT_DOMAIN=test.aera.org.mw
+./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN --set TLS_CERT_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN
 
 ./aera env:get --target=backend --profile=prod --get JWT_SECRET --get PUBLIC_API_KEY
 ./aera env:unset --target=backend --profile=prod --unset OLD_LEGACY_SECRET
@@ -316,7 +316,7 @@ Use `--profile=dev` for development env files (`backend/.env`, `client/.env`, `p
 Before certificate issuance, from your local machine:
 
 ```bash
-dig +short test.aera.org.mw
+dig +short REPLACE_WITH_SECONDARY_DOMAIN
 ```
 
 This **must** return your VPS public IP.
@@ -369,7 +369,7 @@ docker run --rm -v aera_certbot_certs:/etc/letsencrypt alpine:3.20 sh -c "
 
 In cPanel:
 
-1. Go to `Email Accounts` for your mailbox (for example `info@aera.org.mw`)
+1. Go to `Email Accounts` for your mailbox (for example `REPLACE_WITH_EMAIL_ADDRESS`)
 2. Open `Connect Devices` / `Set Up Mail Client`
 3. Copy Outgoing (SMTP) values: host, port, encryption, username, password
 
@@ -381,14 +381,14 @@ EMAIL_PORT=<465_or_587>
 EMAIL_SECURE=<true_for_465_or_false_for_587>
 EMAIL_USER=<full_mailbox_address>
 EMAIL_PASSWORD=<mailbox_password>
-EMAIL_FROM='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+EMAIL_FROM='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ```
 
 Apply quickly with unified CLI:
 
 ```bash
 cd ~/apps/Website
-./aera smtp:configure --provider=cpanel --host=<cpanel_smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=cpanel --host=<cpanel_smtp_host> --port=<465_or_587> --secure=<true_or_false> --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:show
 ./aera smtp:test --to=<your_test_email>
 ```
@@ -397,12 +397,12 @@ Switching later to another provider (example Microsoft 365) is one command + res
 
 ```bash
 cd ~/apps/Website
-./aera smtp:configure --provider=m365 --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <info@aera.org.mw>'
+./aera smtp:configure --provider=m365 --user=<full_mailbox_address> --password='<mailbox_password>' --from='"Atomic Energy Regulatory Authority" <REPLACE_WITH_EMAIL_ADDRESS>'
 ./aera smtp:test --to=<your_test_email>
 ```
 
-The `smtp:configure` command updates `.env.production` and recreates only backend runtime services (`aera-api`, `aera-worker`) by default.
-Advanced option: use `--worker-only` to recreate only `aera-worker` when you are certain email sending is worker-only.
+The `smtp:configure` command updates `.env.production` and recreates only backend runtime services (`REPLACE_WITH_API_SERVICE`, `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME`) by default.
+Advanced option: use `--worker-only` to recreate only `REPLACE_WITH_CONTAINER_OR_SERVICE_NAME` when you are certain email sending is worker-only.
 
 ### Step 4. Start prod edge
 
@@ -419,7 +419,7 @@ make prod-cert-init EMAIL=<YOUR_EMAIL>
 ### Step 6. Restart edge to load real cert
 
 ```bash
-docker compose -f prod/docker-compose.edge.prod.yml restart aera-edge-prod
+docker compose -f prod/docker-compose.edge.prod.yml restart REPLACE_WITH_EDGE_CONTAINER
 ```
 
 ### Optional: maintenance mode during planned changes
@@ -444,8 +444,8 @@ This keeps edge online but serves a controlled `503` maintenance page instead of
 
 ```bash
 make status
-curl -I http://test.aera.org.mw
-curl -I https://test.aera.org.mw
+curl -I http://REPLACE_WITH_SECONDARY_DOMAIN
+curl -I https://REPLACE_WITH_SECONDARY_DOMAIN
 ```
 
 Expected:
@@ -461,7 +461,7 @@ Expected:
 
 ```bash
 cd ~/apps/Website/proxy
-docker compose -f prod/docker-compose.edge.prod.yml logs -f aera-edge-prod
+docker compose -f prod/docker-compose.edge.prod.yml logs -f REPLACE_WITH_EDGE_CONTAINER
 ```
 
 ```bash
@@ -487,10 +487,10 @@ make prod-restart
 
 When ready:
 
-1. Update DNS so `aera.org.mw` points to same VPS
+1. Update DNS so `REPLACE_WITH_PRIMARY_DOMAIN` points to same VPS
 2. Edit `proxy/prod/.env.edge.prod`:
-    - `PRIMARY_DOMAIN=aera.org.mw`
-    - `SECONDARY_DOMAIN=test.aera.org.mw`
+    - `PRIMARY_DOMAIN=REPLACE_WITH_PRIMARY_DOMAIN`
+    - `SECONDARY_DOMAIN=REPLACE_WITH_SECONDARY_DOMAIN`
     - Keep or change `TLS_CERT_DOMAIN` intentionally
 3. Re-issue certificate including both domains:
 

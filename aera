@@ -31,6 +31,10 @@ MAINTENANCE_FLAG="$MAINTENANCE_DIR/enabled"
 NETWORK_NAME="${AERA_SHARED_NETWORK:-aera_network_prod}"
 WAIT_SECONDS="${AERA_WAIT_SECONDS:-600}"
 RETRY_PAUSE_SECONDS="${AERA_RETRY_PAUSE_SECONDS:-300}"
+BACKEND_MONGO_CONTAINER="${AERA_BACKEND_MONGO_CONTAINER:-aera-mongo-prod}"
+BACKEND_REDIS_CONTAINER="${AERA_BACKEND_REDIS_CONTAINER:-aera-redis-prod}"
+BACKEND_RABBITMQ_CONTAINER="${AERA_BACKEND_RABBITMQ_CONTAINER:-aera-rabbitmq-prod}"
+BACKEND_API_CONTAINER="${AERA_BACKEND_API_CONTAINER:-aera-api-prod}"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -153,10 +157,10 @@ status_of() {
 }
 
 all_backend_healthy() {
-  [ "$(status_of aera-mongo-prod)" = "healthy" ] \
-    && [ "$(status_of aera-redis-prod)" = "healthy" ] \
-    && [ "$(status_of aera-rabbitmq-prod)" = "healthy" ] \
-    && [ "$(status_of aera-api-prod)" = "healthy" ]
+  [ "$(status_of "$BACKEND_MONGO_CONTAINER")" = "healthy" ] \
+    && [ "$(status_of "$BACKEND_REDIS_CONTAINER")" = "healthy" ] \
+    && [ "$(status_of "$BACKEND_RABBITMQ_CONTAINER")" = "healthy" ] \
+    && [ "$(status_of "$BACKEND_API_CONTAINER")" = "healthy" ]
 }
 
 wait_backend_healthy() {
@@ -171,10 +175,10 @@ wait_backend_healthy() {
     fi
 
     printf '[aera] pending health: mongo=%s redis=%s rabbitmq=%s api=%s\n' \
-      "$(status_of aera-mongo-prod)" \
-      "$(status_of aera-redis-prod)" \
-      "$(status_of aera-rabbitmq-prod)" \
-      "$(status_of aera-api-prod)"
+      "$(status_of "$BACKEND_MONGO_CONTAINER")" \
+      "$(status_of "$BACKEND_REDIS_CONTAINER")" \
+      "$(status_of "$BACKEND_RABBITMQ_CONTAINER")" \
+      "$(status_of "$BACKEND_API_CONTAINER")"
 
     now=$(date +%s)
     if [ "$now" -ge "$deadline" ]; then
@@ -310,18 +314,22 @@ Environment overrides:
   AERA_SHARED_NETWORK=<name>       (default: aera_network_prod)
   AERA_WAIT_SECONDS=<seconds>      (default: 600)
   AERA_RETRY_PAUSE_SECONDS=<secs>  (default: 300)
+  AERA_BACKEND_MONGO_CONTAINER=<name>    (default: aera-mongo-prod)
+  AERA_BACKEND_REDIS_CONTAINER=<name>    (default: aera-redis-prod)
+  AERA_BACKEND_RABBITMQ_CONTAINER=<name> (default: aera-rabbitmq-prod)
+  AERA_BACKEND_API_CONTAINER=<name>      (default: aera-api-prod)
 
 SMTP examples:
-  ./aera smtp:configure --provider=m365 --user=info@aera.org.mw --password='***' --from='"AERA" <no-reply@aera.org.mw>'
-  ./aera smtp:configure --provider=cpanel --host=mail.aera.org.mw --port=465 --secure=true --user=info@aera.org.mw --password='***' --from='"AERA" <no-reply@aera.org.mw>' --restart
-  ./aera smtp:configure --provider=cpanel --host=mail.aera.org.mw --port=465 --secure=true --user=info@aera.org.mw --password='***' --worker-only
+  ./aera smtp:configure --provider=m365 --user=<smtp_mailbox> --password='***' --from='"AERA" <${SMTP_FROM_EMAIL}>'
+  ./aera smtp:configure --provider=cpanel --host=<smtp_host> --port=465 --secure=true --user=<smtp_mailbox> --password='***' --from='"AERA" <${SMTP_FROM_EMAIL}>' --restart
+  ./aera smtp:configure --provider=cpanel --host=<smtp_host> --port=465 --secure=true --user=<smtp_mailbox> --password='***' --worker-only
   ./aera smtp:show
-  ./aera smtp:test --to=info@aera.org.mw
+  ./aera smtp:test --to=<smtp_mailbox>
 
 Unified env examples:
   ./aera env:set --target=backend --profile=prod --set JWT_SECRET='super-secret' --set REFRESH_TOKEN_ENCRYPTION_KEY='another-secret'
   ./aera env:set --target=client --profile=prod --set NUXT_PUBLIC_API_BASE_URL=/api/v1 --set NUXT_PUBLIC_UPLOADS_PATH=/uploads
-  ./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=test.aera.org.mw --set TLS_CERT_DOMAIN=test.aera.org.mw
+  ./aera env:set --target=proxy --profile=prod --set PRIMARY_DOMAIN=<primary_domain> --set TLS_CERT_DOMAIN=<tls_cert_domain>
   ./aera client:api-key:sync --profile=prod
   ./aera env:get --target=backend --profile=prod --get JWT_SECRET --get EMAIL_HOST
   ./aera env:unset --target=backend --profile=dev --unset OLD_SECRET_KEY
@@ -733,12 +741,12 @@ cmd_smtp_test() {
   fi
   [ -n "$recipient" ] || fail "smtp:test needs --to=<email> or EMAIL_USER in $BACKEND_ENV"
 
-  if ! docker ps --format '{{.Names}}' | grep -qx 'aera-api-prod'; then
-    fail "Container aera-api-prod is not running. Start backend first with ./aera backend:up"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$BACKEND_API_CONTAINER"; then
+    fail "Container $BACKEND_API_CONTAINER is not running. Start backend first with ./aera backend:up"
   fi
 
-  info "Sending SMTP test email to $recipient via aera-api-prod"
-  docker exec -e SMTP_TEST_TO="$recipient" -e SMTP_TEST_SUBJECT="$subject" aera-api-prod node -e "const nodemailer=require('nodemailer');const host=process.env.EMAIL_HOST;const port=Number(process.env.EMAIL_PORT||'587');const secure=(String(process.env.EMAIL_SECURE||'').toLowerCase()==='true')||(port===465);const user=process.env.EMAIL_USER;const pass=process.env.EMAIL_PASSWORD;const from=process.env.EMAIL_FROM||user;const to=process.env.SMTP_TEST_TO||user;const sub=process.env.SMTP_TEST_SUBJECT||'AERA SMTP test email';if(!host||!user||!pass){console.error('Missing EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD in container env');process.exit(1);}const t=nodemailer.createTransport({host,port,secure,auth:{user,pass}});t.sendMail({from,to,subject:sub,text:'SMTP test from AERA at '+new Date().toISOString()}).then(info=>{console.log('SMTP test mail queued:',info.messageId);}).catch(err=>{console.error('SMTP test failed:',err.message);process.exit(1);});"
+  info "Sending SMTP test email to $recipient via $BACKEND_API_CONTAINER"
+  docker exec -e SMTP_TEST_TO="$recipient" -e SMTP_TEST_SUBJECT="$subject" "$BACKEND_API_CONTAINER" node -e "const nodemailer=require('nodemailer');const host=process.env.EMAIL_HOST;const port=Number(process.env.EMAIL_PORT||'587');const secure=(String(process.env.EMAIL_SECURE||'').toLowerCase()==='true')||(port===465);const user=process.env.EMAIL_USER;const pass=process.env.EMAIL_PASSWORD;const from=process.env.EMAIL_FROM||user;const to=process.env.SMTP_TEST_TO||user;const sub=process.env.SMTP_TEST_SUBJECT||'SMTP test email';if(!host||!user||!pass){console.error('Missing EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD in container env');process.exit(1);}const t=nodemailer.createTransport({host,port,secure,auth:{user,pass}});t.sendMail({from,to,subject:sub,text:'SMTP test sent at '+new Date().toISOString()}).then(info=>{console.log('SMTP test mail queued:',info.messageId);}).catch(err=>{console.error('SMTP test failed:',err.message);process.exit(1);});"
   log "SMTP test command completed"
 }
 
