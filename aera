@@ -301,6 +301,9 @@ Root env/content aliases:
   client:api-key:sync     Copy backend PUBLIC_API_KEY to client NUXT_PUBLIC_API_KEY for the same profile
   client:secrets:generate Generate client secrets into dev or prod env file
   proxy:secrets:generate  Generate proxy secrets into dev or prod env file
+  repo:pull:sparse        Pull with sparse checkout (dynamic include/exclude paths)
+  repo:sparse:show        Show active sparse-checkout rules for a repo
+  client:pull:sparse      Shortcut for repo:pull:sparse --repo=client
   env:set                 Set one or more env variables in backend/client/proxy env files
   env:get                 Read one or more env variables from backend/client/proxy env files
   env:unset               Remove one or more env variables from backend/client/proxy env files
@@ -336,6 +339,13 @@ Unified env examples:
   ./aera backend:secrets:generate --profile=prod
   ./aera client:secrets:generate --profile=prod --secret CUSTOM_CLIENT_SECRET
   ./aera proxy:secrets:generate --profile=prod --secret CUSTOM_EDGE_SECRET --format=base64
+
+Sparse checkout examples (Laravel-style):
+  ./aera repo:pull:sparse --repo=client --branch=main --exclude=generated-content/
+  ./aera repo:pull:sparse --repo=client --exclude=generated-content/ --exclude=docs/
+  ./aera repo:pull:sparse --repo=client --include-all=false --include=nuxt.config.ts --include=components/
+  ./aera client:pull:sparse --exclude=generated-content/
+  ./aera repo:sparse:show --repo=client
 EOF
 }
 
@@ -1004,6 +1014,148 @@ cmd_proxy_secrets_generate() {
   cmd_target_secrets_generate proxy "$@"
 }
 
+repo_resolve_dir() {
+  local repo="$1"
+  case "${repo,,}" in
+    backend) echo "$BACKEND_DIR" ;;
+    client) echo "$CLIENT_DIR" ;;
+    proxy) echo "$PROXY_DIR" ;;
+    *) fail "Unsupported repo: $repo (use backend|client|proxy)" ;;
+  esac
+}
+
+normalize_sparse_path() {
+  local input="$1"
+  local output="$input"
+
+  output="${output#./}"
+  while [[ "$output" == *"//"* ]]; do
+    output="${output//\/\//\/}"
+  done
+
+  if [[ "$output" != /* ]]; then
+    output="/$output"
+  fi
+
+  printf '%s' "$output"
+}
+
+cmd_repo_sparse_show() {
+  local repo="client"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo=*) repo="${1#*=}" ;;
+      --repo)
+        shift
+        repo="${1:-}"
+        ;;
+      *) fail "Unknown repo:sparse:show option: $1" ;;
+    esac
+    shift || true
+  done
+
+  local repo_dir sparse_file
+  repo_dir=$(repo_resolve_dir "$repo")
+  sparse_file="$repo_dir/.git/info/sparse-checkout"
+
+  require_cmd git
+  [ -d "$repo_dir/.git" ] || fail "Not a git repository: $repo_dir"
+
+  if [ ! -f "$sparse_file" ]; then
+    warn "No sparse-checkout rules found for repo=$repo ($sparse_file)"
+    return 0
+  fi
+
+  echo "Sparse rules for repo=$repo ($sparse_file):"
+  cat "$sparse_file"
+}
+
+cmd_repo_pull_sparse() {
+  local repo="client"
+  local remote="origin"
+  local branch="main"
+  local include_all="true"
+  local includes=()
+  local excludes=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo=*) repo="${1#*=}" ;;
+      --repo)
+        shift
+        repo="${1:-}"
+        ;;
+      --remote=*) remote="${1#*=}" ;;
+      --remote)
+        shift
+        remote="${1:-}"
+        ;;
+      --branch=*) branch="${1#*=}" ;;
+      --branch)
+        shift
+        branch="${1:-}"
+        ;;
+      --include-all=*) include_all="${1#*=}" ;;
+      --include-all)
+        shift
+        include_all="${1:-}"
+        ;;
+      --include=*) includes+=("${1#*=}") ;;
+      --include)
+        shift
+        includes+=("${1:-}")
+        ;;
+      --exclude=*) excludes+=("${1#*=}") ;;
+      --exclude)
+        shift
+        excludes+=("${1:-}")
+        ;;
+      *) fail "Unknown repo:pull:sparse option: $1" ;;
+    esac
+    shift || true
+  done
+
+  local repo_dir sparse_file normalized
+  repo_dir=$(repo_resolve_dir "$repo")
+  sparse_file="$repo_dir/.git/info/sparse-checkout"
+
+  require_cmd git
+  [ -d "$repo_dir/.git" ] || fail "Not a git repository: $repo_dir"
+
+  info "Initializing sparse-checkout for repo=$repo"
+  git -C "$repo_dir" sparse-checkout init --no-cone
+
+  {
+    if is_true "$include_all"; then
+      echo "/*"
+    fi
+
+    for normalized in "${includes[@]}"; do
+      [ -n "$normalized" ] || fail "--include requires a non-empty path"
+      echo "$(normalize_sparse_path "$normalized")"
+    done
+
+    for normalized in "${excludes[@]}"; do
+      [ -n "$normalized" ] || fail "--exclude requires a non-empty path"
+      echo "!$(normalize_sparse_path "$normalized")"
+    done
+  } > "$sparse_file"
+
+  info "Applying sparse rules"
+  git -C "$repo_dir" read-tree -mu HEAD
+
+  info "Pulling latest from $remote/$branch"
+  git -C "$repo_dir" pull --ff-only "$remote" "$branch"
+
+  log "Sparse pull complete for repo=$repo"
+  cmd_repo_sparse_show --repo="$repo"
+}
+
+cmd_client_pull_sparse() {
+  cmd_repo_pull_sparse --repo=client "$@"
+}
+
 cmd_env_set() {
   local target=""
   local profile=""
@@ -1249,6 +1401,9 @@ main() {
     client:api-key:sync) cmd_client_api_key_sync "$@" ;;
     client:secrets:generate) cmd_client_secrets_generate "$@" ;;
     proxy:secrets:generate) cmd_proxy_secrets_generate "$@" ;;
+    repo:pull:sparse) cmd_repo_pull_sparse "$@" ;;
+    repo:sparse:show) cmd_repo_sparse_show "$@" ;;
+    client:pull:sparse) cmd_client_pull_sparse "$@" ;;
     content:seed:admin|content:seed:user) cmd_content_seed_admin "$@" ;;
     content:cache:clear) cmd_content_cache_clear "$@" ;;
     env:set) cmd_env_set "$@" ;;
