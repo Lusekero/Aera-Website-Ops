@@ -4,6 +4,80 @@ Use this on deployment day. Command-first, minimal explanation.
 
 ---
 
+## 0) Latest production hardening deltas (2026-07-24)
+
+Apply these before deploy/redeploy:
+
+- Sync latest repos and use backend-first rollout.
+- Keep backend and client internal SSR secret values identical.
+- Use certbot container entrypoint explicitly for first cert issuance when needed.
+- If public routes return 429 with `RATE_LIMIT_BACKEND_UNAVAILABLE`, verify Redis host/url and deploy latest backend.
+
+### 0A) Sync latest code on VPS
+
+```bash
+cd ~/apps/Website
+git -C backend pull --ff-only
+git -C client pull --ff-only
+git -C proxy pull --ff-only
+```
+
+### 0B) Generate and sync internal SSR request secret (prod)
+
+```bash
+cd ~/apps/Website
+./aera backend:cmd api:script:internal-request-secret:generate --profile=prod
+```
+
+Verify expected env keys exist:
+
+```bash
+./aera env:get --target=backend --profile=prod --get INTERNAL_REQUEST_SECRET --masked
+./aera env:get --target=client --profile=prod --get NUXT_INTERNAL_REQUEST_SECRET --masked
+```
+
+### 0C) Backend-first hotfix deploy order
+
+```bash
+cd ~/apps/Website
+./aera backend:build --no-cache
+./aera backend:up
+./aera backend:wait
+./aera client:up
+./aera edge:up
+./aera status
+```
+
+### 0D) Cert issuance fallback (explicit certbot entrypoint)
+
+```bash
+cd ~/apps/Website/proxy
+docker compose -f prod/docker-compose.edge.prod.yml --env-file prod/.env.edge.prod run --rm --entrypoint certbot REPLACE_WITH_CERTBOT_CONTAINER certonly --webroot -w /var/www/certbot -d REPLACE_WITH_PRIMARY_DOMAIN -d REPLACE_WITH_SECONDARY_DOMAIN --email <ops_email> --agree-tos --no-eff-email
+docker compose -f prod/docker-compose.edge.prod.yml --env-file prod/.env.edge.prod restart REPLACE_WITH_EDGE_CONTAINER
+```
+
+If cert issuance fails due to stale placeholder lineage, inspect/remove conflicting live directory inside cert volume, then retry.
+
+### 0E) 429 fail-closed limiter triage
+
+Symptom in backend logs:
+
+- `RATE_LIMIT_BACKEND_UNAVAILABLE`
+- `this.client.rlflxIncr is not a function`
+
+Recovery checklist:
+
+```bash
+cd ~/apps/Website
+./aera env:get --target=backend --profile=prod --get REDIS_HOST --get REDIS_URL
+./aera backend:build --no-cache
+./aera backend:up
+./aera backend:wait
+./aera logs:backend | grep -E "rlflxIncr|RATE_LIMIT_BACKEND_UNAVAILABLE|Successfully connected to Redis"
+```
+
+---
+
 ## 1) SSH from local
 
 ```bash

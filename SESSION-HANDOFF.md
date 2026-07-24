@@ -2,6 +2,92 @@
 
 Date: 2026-02-22
 
+## Update: Production hardening, SSR trust channel, and limiter recovery (2026-07-24)
+
+### What was completed
+
+- Stabilized multi-repo production workflow using pull -> build -> up -> wait -> verify sequence.
+- Fixed proxy certificate bootstrap path for first-time issuance.
+- Hardened backend public access controls while preserving SSR functionality.
+- Added shared-secret trusted channel for internal SSR reads.
+- Added command-driven secret generation/sync for backend and client profiles.
+- Fixed production Redis limiter integration causing fail-closed 429 responses.
+
+### Git activity since yesterday (authoritative)
+
+Backend (`Aera-Website-API`):
+
+- `83ec296` Fix rlflxIncr Redis limiter integration
+- `c09c630` Fix production limiter fallback to use Redis backend
+- `68e4393` Add internal request secret generator command
+- `7f685bf` Harden SSR internal requests with shared secret
+- `b2da40d` Exclude health and upload reads from security limiter
+- `6b983c6` Skip security limiter for upload GET and HEAD reads
+
+Client (`Aera-Website-Client`):
+
+- `d410042` Add SSR internal request secret header
+
+Proxy (`Aera-Website-Proxy`):
+
+- `e79cf27` Fix cert init to run certbot entrypoint explicitly
+- `4433c77` Update production edge compose configuration
+
+### Production behavior now
+
+- Health checks (`/health`) are excluded from global security limiter and hidden from request logs by default.
+- Public upload read routes (`GET/HEAD /api/v1/uploads/*`) bypass the security limiter to prevent false-positive throttling.
+- Production no-Origin SSR reads are permitted only when `x-internal-request` matches `INTERNAL_REQUEST_SECRET`.
+- Backend startup fails fast in production if `INTERNAL_REQUEST_SECRET` is missing/weak.
+- `RateLimiterRedis` now uses native ioredis client, resolving `this.client.rlflxIncr is not a function` errors.
+
+### Required production env alignment
+
+- Backend `.env.production`:
+    - `INTERNAL_REQUEST_SECRET=<strong_random_secret>`
+    - `REDIS_HOST=aera-redis` and/or `REDIS_URL=redis://aera-redis:6379`
+- Client `.env.production`:
+    - `NUXT_INTERNAL_REQUEST_SECRET=<same_value_as_backend_INTERNAL_REQUEST_SECRET>`
+
+Generate and sync internal secret (from `~/apps/Website`):
+
+```bash
+./aera backend:cmd api:script:internal-request-secret:generate --profile=prod
+```
+
+### Verified hotfix deploy sequence (VPS)
+
+```bash
+cd ~/apps/Website
+
+# 1) Pull latest on all repos
+git -C backend pull --ff-only
+git -C client pull --ff-only
+git -C proxy pull --ff-only
+
+# 2) Rebuild/restart backend first
+./aera backend:build --no-cache
+./aera backend:up
+./aera backend:wait
+
+# 3) Bring up dependent layers
+./aera client:up
+./aera edge:up
+
+# 4) Verify runtime
+./aera status
+./aera logs:backend | grep -E "rlflxIncr|RATE_LIMIT_BACKEND_UNAVAILABLE|trusted internal read"
+```
+
+### Cert issuance fallback command (if cert init wrapper fails)
+
+```bash
+cd ~/apps/Website/proxy
+docker compose -f prod/docker-compose.edge.prod.yml --env-file prod/.env.edge.prod run --rm --entrypoint certbot REPLACE_WITH_CERTBOT_CONTAINER certonly --webroot -w /var/www/certbot -d REPLACE_WITH_PRIMARY_DOMAIN -d REPLACE_WITH_SECONDARY_DOMAIN --email <ops_email> --agree-tos --no-eff-email
+```
+
+If placeholder self-signed lineage exists for the same domain in cert volume, remove stale files and retry cert issuance.
+
 ## Current state (authoritative)
 
 - Deployment workflow is now centered on root command runner: `~/apps/Website/aera`.

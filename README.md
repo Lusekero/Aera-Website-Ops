@@ -9,6 +9,21 @@ This guide shows you how to:
 
 ---
 
+## Production Update (2026-07-24)
+
+Recent production hardening and recovery work is now part of the standard flow:
+
+- Backend now supports trusted SSR reads via shared secret header (`x-internal-request`).
+- New command to generate and sync internal secret values:
+    - `./aera backend:cmd api:script:internal-request-secret:generate --profile=prod`
+- Public upload read routes and `/health` are excluded from global security limiter to avoid false-positive throttling.
+- Proxy cert bootstrap supports explicit certbot entrypoint usage for first issuance on fresh deployments.
+- Backend Redis limiter integration hotfix resolves `rlflxIncr` errors and fail-closed 429s.
+
+For day-of commands and incident recovery, use `DEPLOY-CHEATSHEET.md` as the authoritative quick runbook.
+
+---
+
 ## 0) What you need before starting
 
 - VPS details from your provider:
